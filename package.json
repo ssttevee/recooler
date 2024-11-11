@@ -40,7 +40,6 @@
   "scripts": {
     "dev": "cargo watch -w src -s 'scripts/watch.sh'",
     "bump": "npx changeset version",
-    "play": "pnpm --filter playground dev",
     "prepack": "npm run build",
     "build": "farm-plugin-tools build --platform --cargo-name farm_plugin_recooler -p farm_plugin_recooler --release",
     "prepublishOnly": "farm-plugin-tools prepublish"
