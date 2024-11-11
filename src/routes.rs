@@ -292,6 +292,13 @@ impl FarmPluginRecooler {
   }
 }
 
+lazy_static! {
+  static ref PATH_COMPONENT_ROUTE_PARAM_PATTERN: Regex =
+    Regex::new(r"^\[([^\[\]][^\]]*)\]$").unwrap();
+  static ref PATH_COMPONENT_ROUTE_WILDCARD_PATTERN: Regex =
+    Regex::new(r"^\[\[([^\]]+)\]\]$").unwrap();
+}
+
 pub(crate) fn file_to_route_path<P: AsRef<Path>>(route_dir: P, file_path: &Path) -> String {
   // println!(
   //   "file_to_route_path: {:?} {:?}",
@@ -300,7 +307,24 @@ pub(crate) fn file_to_route_path<P: AsRef<Path>>(route_dir: P, file_path: &Path)
   // );
   let mut relpath = file_path.relative_to(route_dir).unwrap();
   relpath.pop();
-  format!("/{}", relpath.as_str())
+
+  format!(
+    "/{}",
+    relpath
+      .iter()
+      .map(|p| {
+        PATH_COMPONENT_ROUTE_PARAM_PATTERN
+          .replace(p, ":$1")
+          .to_string()
+      })
+      .map(|p| {
+        PATH_COMPONENT_ROUTE_WILDCARD_PATTERN
+          .replace(p.as_str(), ":$1{.+}")
+          .to_string()
+      })
+      .collect::<Vec<String>>()
+      .join("/")
+  )
 }
 
 lazy_static! {
