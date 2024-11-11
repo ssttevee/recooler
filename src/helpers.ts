@@ -1,6 +1,7 @@
 import {
   type Component,
   createElement,
+  Fragment,
   type SuspenseRequestID,
 } from "easy-jsx-html-engine";
 import { renderToStream } from "easy-jsx-html-engine/stream-webapi";
@@ -90,4 +91,22 @@ export function actionsMiddleware(
 
 export function makeCloudflarePagesHandler(app: Hono): Function {
   return (ctx: any) => app.fetch(ctx, ctx.env, ctx);
+}
+
+export function renderHeadElements(
+  head: RouteHead,
+): ReturnType<typeof createElement> {
+  return createElement(
+    Fragment,
+    {},
+    head.title ? createElement("title", {}, head.title) : null,
+    head.base &&
+      createElement(
+        "base",
+        typeof head.base === "string" ? { href: head.base } : head.base,
+      ),
+    head.metas?.map((props) => createElement("meta", props)),
+    head.links?.map((props) => createElement("link", props)),
+    head.scripts?.map((props) => createElement("script", props)),
+  );
 }
