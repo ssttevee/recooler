@@ -476,7 +476,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6082b74cc322c69840d97a7d7cba3ee9ed34fa70536fb51a69824f36742960f5"
 dependencies = [
  "base64 0.22.1",
- "farmfe_utils 0.1.5 (registry+https://github.com/rust-lang/crates.io-index)",
+ "farmfe_utils 0.1.6",
  "parking_lot",
  "regex",
  "sourcemap 8.0.1",
@@ -497,13 +497,13 @@ dependencies = [
  "farmfe_core",
  "farmfe_macro_plugin",
  "farmfe_plugin_minify",
+ "farmfe_toolkit",
  "farmfe_toolkit_plugin_types",
  "lazy_static",
  "radix_fmt",
  "serde",
  "serde_json",
  "swc_atoms",
- "swc_ecma_visit",
  "urlencoding",
  "walkdir",
 ]
@@ -532,7 +532,7 @@ dependencies = [
  "farmfe_testing",
  "farmfe_testing_helpers",
  "farmfe_toolkit",
- "farmfe_utils 0.1.5 (git+https://github.com/ssttevee/farm.git?branch=subcompiler)",
+ "farmfe_utils 0.1.5",
  "num_cpus",
 ]
 
@@ -547,7 +547,7 @@ dependencies = [
  "downcast-rs",
  "enhanced-magic-string",
  "farmfe_macro_cache_item",
- "farmfe_utils 0.1.5 (git+https://github.com/ssttevee/farm.git?branch=subcompiler)",
+ "farmfe_utils 0.1.5",
  "globset",
  "heck",
  "hex",
@@ -600,7 +600,7 @@ dependencies = [
  "farmfe_core",
  "farmfe_testing_helpers",
  "farmfe_toolkit",
- "farmfe_utils 0.1.5 (git+https://github.com/ssttevee/farm.git?branch=subcompiler)",
+ "farmfe_utils 0.1.5",
 ]
 
 [[package]]
@@ -611,7 +611,7 @@ dependencies = [
  "farmfe_core",
  "farmfe_macro_cache_item",
  "farmfe_toolkit",
- "farmfe_utils 0.1.5 (git+https://github.com/ssttevee/farm.git?branch=subcompiler)",
+ "farmfe_utils 0.1.5",
  "rkyv",
 ]
 
@@ -623,7 +623,7 @@ dependencies = [
  "farmfe_core",
  "farmfe_testing_helpers",
  "farmfe_toolkit",
- "farmfe_utils 0.1.5 (git+https://github.com/ssttevee/farm.git?branch=subcompiler)",
+ "farmfe_utils 0.1.5",
 ]
 
 [[package]]
@@ -655,7 +655,7 @@ dependencies = [
  "farmfe_core",
  "farmfe_testing_helpers",
  "farmfe_toolkit",
- "farmfe_utils 0.1.5 (git+https://github.com/ssttevee/farm.git?branch=subcompiler)",
+ "farmfe_utils 0.1.5",
 ]
 
 [[package]]
@@ -707,7 +707,7 @@ dependencies = [
  "farmfe_core",
  "farmfe_testing_helpers",
  "farmfe_toolkit",
- "farmfe_utils 0.1.5 (git+https://github.com/ssttevee/farm.git?branch=subcompiler)",
+ "farmfe_utils 0.1.5",
  "once_cell",
 ]
 
@@ -719,7 +719,7 @@ dependencies = [
  "farmfe_core",
  "farmfe_testing_helpers",
  "farmfe_toolkit",
- "farmfe_utils 0.1.5 (git+https://github.com/ssttevee/farm.git?branch=subcompiler)",
+ "farmfe_utils 0.1.5",
  "rkyv",
 ]
 
@@ -732,7 +732,7 @@ dependencies = [
  "farmfe_swc_transformer_import_glob",
  "farmfe_testing_helpers",
  "farmfe_toolkit",
- "farmfe_utils 0.1.5 (git+https://github.com/ssttevee/farm.git?branch=subcompiler)",
+ "farmfe_utils 0.1.5",
 ]
 
 [[package]]
@@ -744,7 +744,7 @@ dependencies = [
  "farmfe_core",
  "farmfe_testing_helpers",
  "farmfe_toolkit",
- "farmfe_utils 0.1.5 (git+https://github.com/ssttevee/farm.git?branch=subcompiler)",
+ "farmfe_utils 0.1.5",
  "mime_guess",
  "rkyv",
 ]
@@ -757,7 +757,7 @@ dependencies = [
  "farmfe_core",
  "farmfe_testing_helpers",
  "farmfe_toolkit",
- "farmfe_utils 0.1.5 (git+https://github.com/ssttevee/farm.git?branch=subcompiler)",
+ "farmfe_utils 0.1.5",
 ]
 
 [[package]]
@@ -768,7 +768,7 @@ dependencies = [
  "farmfe_core",
  "farmfe_testing_helpers",
  "farmfe_toolkit",
- "farmfe_utils 0.1.5 (git+https://github.com/ssttevee/farm.git?branch=subcompiler)",
+ "farmfe_utils 0.1.5",
 ]
 
 [[package]]
@@ -802,7 +802,7 @@ dependencies = [
  "farmfe_core",
  "farmfe_testing_helpers",
  "farmfe_toolkit_plugin_types",
- "farmfe_utils 0.1.5 (git+https://github.com/ssttevee/farm.git?branch=subcompiler)",
+ "farmfe_utils 0.1.5",
  "lazy_static",
  "preset_env_base",
  "sourcemap 8.0.1",
@@ -841,8 +841,7 @@ dependencies = [
 [[package]]
 name = "farmfe_utils"
 version = "0.1.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d797c8fb2b5c357bd730dc119169e663f8ae7dfbc606696350c104e39324749d"
+source = "git+https://github.com/ssttevee/farm.git?branch=subcompiler#ea6fe00bb0d7997e1d83417f9cbe77a4b9f038ac"
 dependencies = [
  "base64 0.21.7",
  "pathdiff",
@@ -851,8 +850,9 @@ dependencies = [
 
 [[package]]
 name = "farmfe_utils"
-version = "0.1.5"
-source = "git+https://github.com/ssttevee/farm.git?branch=subcompiler#ea6fe00bb0d7997e1d83417f9cbe77a4b9f038ac"
+version = "0.1.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ecf11fa27400ba9125fe9fde0f2b3a26c78140d721ee95c6a2dfb8c0fdb6d3d3"
 dependencies = [
  "base64 0.21.7",
  "pathdiff",

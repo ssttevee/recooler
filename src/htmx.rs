@@ -10,9 +10,9 @@ use farmfe_core::{
     VarDecl, VarDeclKind, VarDeclarator,
   },
 };
+use farmfe_toolkit::swc_ecma_visit::{visit_module, visit_mut_module, Visit, VisitMut};
 use lazy_static::lazy_static;
 use swc_atoms::AtomStore;
-use swc_ecma_visit::{Visit, VisitMut};
 
 #[derive(Debug, PartialEq, Eq, Hash, Clone, Copy)]
 pub(crate) enum RequestHandlerMethod {
@@ -114,7 +114,7 @@ pub(crate) fn ensure_registered_handlers(
     exported_handlers,
   };
 
-  swc_ecma_visit::visit_module(&mut visitor, swc_module);
+  visit_module(&mut visitor, swc_module);
 }
 
 impl<'a> ComponentHandlerValidationVisitor<'a> {
@@ -275,7 +275,7 @@ pub(crate) fn transform_module(
     new_decls: Default::default(),
   };
 
-  swc_ecma_visit::visit_mut_module(&mut visitor, swc_module);
+  visit_mut_module(&mut visitor, swc_module);
 
   for decl in visitor.new_decls {
     swc_module

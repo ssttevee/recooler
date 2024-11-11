@@ -15,12 +15,13 @@ farmfe_toolkit_plugin_types = { git = "https://github.com/ssttevee/farm.git", br
 farmfe_macro_plugin = { git = "https://github.com/ssttevee/farm.git", branch = "subcompiler" }
 # farmfe_compiler = "0.0.11"
 farmfe_compiler = { git = "https://github.com/ssttevee/farm.git", branch = "subcompiler" }
+# farmfe_toolkit = "0.0.14"
+farmfe_toolkit = { git = "https://github.com/ssttevee/farm.git", branch = "subcompiler" }
 farmfe_plugin_minify = { git = "https://github.com/ssttevee/farm.git", branch = "subcompiler" }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 walkdir = "2.5.0"
 const_format = "0.2.33"
-swc_ecma_visit = "0.101.0"
 swc_atoms = "0.6.7"
 radix_fmt = "1.0.0"
 urlencoding = "2.1.3"
