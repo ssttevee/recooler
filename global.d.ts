@@ -1,6 +1,6 @@
 type HonoContext = import("hono").Context;
 
-declare interface RouteProps<TContext extends HonoContext = HonoContext> {
+declare interface RouteProps<TContext = HonoContext> {
   rid: string | number;
   url: URL;
   ctx: TContext;
@@ -19,7 +19,7 @@ declare interface ServerActionFn<TPayload = {}, TContext = HonoContext> {
   (ctx: TContext, payload: TPayload): import("hono/types").HandlerResponse<any>;
 }
 
-declare interface HeadFn<TContext = HonoContext> {
+declare interface RouteHeadFn<TContext = HonoContext> {
   (ctx: TContext, prev: RouteHead): Promise<RouteHead> | RouteHead;
 }
 

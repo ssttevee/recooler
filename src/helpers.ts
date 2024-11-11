@@ -1,10 +1,10 @@
 import {
   type Component,
   createElement,
-  SuspenseRequestID,
+  type SuspenseRequestID,
 } from "easy-jsx-html-engine";
 import { renderToStream } from "easy-jsx-html-engine/stream-webapi";
-import { Context, Handler, MiddlewareHandler } from "hono";
+import { type Context, type Handler, Hono, type MiddlewareHandler } from "hono";
 
 function renderStream<P extends { rid: SuspenseRequestID }>(
   waitUntil: ((promise: Promise<unknown>) => void) | undefined,
@@ -12,13 +12,13 @@ function renderStream<P extends { rid: SuspenseRequestID }>(
   props: Omit<P, "rid">,
 ) {
   return renderToStream(
-    (rid) => createElement(component, { ...props, rid }),
+    (rid: SuspenseRequestID) => createElement(component, { ...props, rid }),
     waitUntil,
   );
 }
 
 export function buildHeadFn(
-  headFns: HeadFn[],
+  headFns: RouteHeadFn[],
   initial?: RouteHead,
 ): (ctx: Context) => Promise<RouteHead> {
   return async (ctx: Context) => {
