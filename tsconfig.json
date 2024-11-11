@@ -1,0 +1,19 @@
+{
+  "compilerOptions": {
+    "strict": true,
+    "sourceMap": false,
+    "target": "esnext",
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "declaration": true,
+    "skipLibCheck": true
+  },
+  "exclude": [
+    "node_modules"
+  ],
+  "include": [
+    "**/*.ts",
+    "global.d.ts",
+    "node_modules/easy-jsx-html-engine/global.d.ts"
+  ]
+}

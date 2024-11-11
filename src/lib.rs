@@ -80,7 +80,6 @@ impl FarmPluginRecooler {
 
 const CLIENT_MODULE_PREFIX: &str = "recooler:@";
 const ENTRYPOINT_MODULE: &str = "recooler::app";
-const HELPERS_MODULE: &str = "recooler::helpers";
 const METADATA_MODULE: &str = "recooler::metadata";
 
 impl Plugin for FarmPluginRecooler {
@@ -133,7 +132,6 @@ impl Plugin for FarmPluginRecooler {
     _hook_context: &PluginHookContext,
   ) -> Result<Option<PluginResolveHookResult>> {
     if param.source == ENTRYPOINT_MODULE
-      || param.source == HELPERS_MODULE
       || param.source == METADATA_MODULE
       || param.source.starts_with(CLIENT_MODULE_PREFIX)
     {
@@ -155,14 +153,6 @@ impl Plugin for FarmPluginRecooler {
     context: &Arc<CompilationContext>,
     hook_context: &PluginHookContext,
   ) -> Result<Option<PluginLoadHookResult>> {
-    if param.module_id == HELPERS_MODULE {
-      return Ok(Some(PluginLoadHookResult {
-        content: include_str!("helpers.ts").to_string(),
-        module_type: ModuleType::Ts,
-        source_map: None,
-      }));
-    }
-
     if param.module_id == ENTRYPOINT_MODULE {
       return Ok(Some(PluginLoadHookResult {
         content: self.generate_entrypoint_module(context, hook_context)?,
@@ -556,14 +546,13 @@ impl FarmPluginRecooler {
       format!(
         r#"
         import {{ Hono }} from "hono";
-        import {{ jsxRouteHandler, actionsMiddleware, buildHeadFn }} from "{}";
+        import {{ jsxRouteHandler, actionsMiddleware, buildHeadFn }} from "farm-plugin-recooler/helpers";
         {}
 
         const app = new Hono({{ strict: false }});
         {}
         export default app;
         "#,
-        HELPERS_MODULE,
         import_idents.imports_str(),
         handlers,
       )

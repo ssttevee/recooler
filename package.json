@@ -35,17 +35,24 @@
       "types": "./scripts/index.d.ts",
       "default": "./scripts/index.js"
     },
+    "./helpers": {
+      "import": "./src/helpers.js",
+      "types": "./src/helpers.d.ts",
+      "default": "./src/helpers.js"
+    },
     "./package.json": "./package.json"
   },
   "scripts": {
     "dev": "cargo watch -w src -s 'scripts/watch.sh'",
     "bump": "npx changeset version",
-    "prepack": "npm run build",
+    "prepack": "npm run build && tsc",
     "build": "farm-plugin-tools build --platform --cargo-name farm_plugin_recooler -p farm_plugin_recooler --release",
     "prepublishOnly": "farm-plugin-tools prepublish"
   },
   "files": [
     "scripts",
+    "src/helpers.js",
+    "src/helpers.d.ts",
     "global.d.ts",
     "options.d.ts"
   ],

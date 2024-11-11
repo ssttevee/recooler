@@ -196,3 +196,6 @@ $RECYCLE.BIN/
 
 *.farm
 *.node
+
+/src/helpers.d.ts
+/src/helpers.js
