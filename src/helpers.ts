@@ -87,3 +87,7 @@ export function actionsMiddleware(
     await next();
   };
 }
+
+export function makeCloudflarePagesHandler(app: Hono): Function {
+  return (ctx: any) => app.fetch(ctx, ctx.env, ctx);
+}

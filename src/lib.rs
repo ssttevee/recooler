@@ -546,12 +546,13 @@ impl FarmPluginRecooler {
       format!(
         r#"
         import {{ Hono }} from "hono";
-        import {{ jsxRouteHandler, actionsMiddleware, buildHeadFn }} from "farm-plugin-recooler/helpers";
+        import {{ jsxRouteHandler, actionsMiddleware, buildHeadFn, makeCloudflarePagesHandler }} from "farm-plugin-recooler/helpers";
         {}
 
         const app = new Hono({{ strict: false }});
         {}
         export default app;
+        export const onRequest = makeCloudflarePagesHandler(app);
         "#,
         import_idents.imports_str(),
         handlers,
