@@ -35,7 +35,7 @@ pub(crate) fn find_exports(module_id: &ModuleId, script: &ScriptModuleMetaData) 
             match spec {
               ExportSpecifier::Namespace(ns) => {
                 exports.insert(match &ns.name {
-                  ModuleExportName::Ident(ident) => ident.to_string(),
+                  ModuleExportName::Ident(ident) => ident.sym.to_string(),
                   ModuleExportName::Str(str) => str.value.to_string(),
                 });
               }
@@ -45,12 +45,12 @@ pub(crate) fn find_exports(module_id: &ModuleId, script: &ScriptModuleMetaData) 
               ExportSpecifier::Named(def) => {
                 if let Some(exported) = &def.exported {
                   exports.insert(match exported {
-                    ModuleExportName::Ident(ident) => ident.to_string(),
+                    ModuleExportName::Ident(ident) => ident.sym.to_string(),
                     ModuleExportName::Str(str) => str.value.to_string(),
                   });
                 } else {
                   exports.insert(match &def.orig {
-                    ModuleExportName::Ident(ident) => ident.to_string(),
+                    ModuleExportName::Ident(ident) => ident.sym.to_string(),
                     ModuleExportName::Str(str) => str.value.to_string(),
                   });
                 }
