@@ -549,10 +549,13 @@ impl FarmPluginRecooler {
         import {{ jsxRouteHandler, actionsMiddleware, buildHeadFn, makeCloudflarePagesHandler }} from "farm-plugin-recooler/helpers";
         {}
 
-        const app = new Hono({{ strict: false }});
-        {}
-        export default app;
-        export const onRequest = makeCloudflarePagesHandler(app);
+        export default /* #__PURE__ */ (() => {{
+            const app = new Hono({{ strict: false }});
+            {}
+            return app;
+        }})();
+
+        export const onRequest = /* #__PURE__ */ makeCloudflarePagesHandler(app);
         "#,
         import_idents.imports_str(),
         handlers,
