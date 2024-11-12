@@ -283,7 +283,7 @@ impl FarmPluginRecooler {
       .iter()
       .map(|f| {
         format!(
-          "{{ path: {}, metadata: {} }}",
+          "{{ path: {}, metadata: typeof {1} === 'undefined' ? undefined : {} }}",
           serde_json::to_string(&file_to_route_path(&self.routes_dir, f)).unwrap(),
           imports.identifier(&ModuleId::from(f.to_str().unwrap()), "metadata")
         )

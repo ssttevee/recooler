@@ -40,5 +40,5 @@ declare module "recooler::app" {
 }
 
 declare module "recooler::metadata" {
-  export const pages: Array<{ path: string; metadata: Record<string, any> }>;
+  export const pages: Array<{ path: string; metadata?: Record<string, any> }>;
 }
