@@ -62,16 +62,24 @@ export function jsxRouteHandler(
     }
 
     const head = await headFn(ctx);
-    return ctx.newResponse(
-      await renderStream(waitUntil, rootContainer(component, script), {
-        url,
-        ctx,
-        head,
-      }),
-      {
-        headers: { "content-type": "text/html" },
-      },
-    );
+    try {
+      return ctx.newResponse(
+        await renderStream(waitUntil, rootContainer(component, script), {
+          url,
+          ctx,
+          head,
+        }),
+        {
+          headers: { "content-type": "text/html" },
+        },
+      );
+    } catch (err) {
+      if (err instanceof Response) {
+        return err;
+      }
+
+      throw err;
+    }
   };
 }
 
