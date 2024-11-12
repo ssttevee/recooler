@@ -37,6 +37,7 @@ declare namespace JSX {
 declare module "recooler::app" {
   const app: import("hono").Hono;
   export default app;
+  export const onRequest: (ctx: unknown) => Promise<Response> | Response;
 }
 
 declare module "recooler::metadata" {

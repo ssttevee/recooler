@@ -89,7 +89,9 @@ export function actionsMiddleware(
   };
 }
 
-export function makeCloudflarePagesHandler(app: Hono): Function {
+export function makeCloudflarePagesHandler(
+  app: Hono,
+): (ctx: unknown) => Promise<Response> | Response {
   return (ctx: any) => app.fetch(ctx, ctx.env, ctx);
 }
 
