@@ -22,9 +22,11 @@ use farmfe_core::{
   error::Result,
   module::{ModuleId, ModuleMetaData, ModuleType},
   plugin::*,
+  regex::Regex,
   relative_path::PathExt,
 };
 use farmfe_macro_plugin::farm_plugin;
+use lazy_static::lazy_static;
 
 use head::build_head_expr;
 use htmx::FormActionMethod;
@@ -212,6 +214,16 @@ impl Plugin for FarmPluginRecooler {
   }
 }
 
+lazy_static! {
+  static ref ROUTE_PATH_GROUP_SEGMENT_PATTERN: Regex = Regex::new(r"/\([\d\w_-]+\)").unwrap();
+}
+
+fn strip_path_route_groups(path: &String) -> String {
+  ROUTE_PATH_GROUP_SEGMENT_PATTERN
+    .replace_all(path.as_str(), "")
+    .to_string()
+}
+
 impl FarmPluginRecooler {
   fn route_has_client_script(
     &self,
@@ -284,7 +296,11 @@ impl FarmPluginRecooler {
       .map(|f| {
         format!(
           "{{ path: {}, metadata: typeof {1} === 'undefined' ? undefined : {} }}",
-          serde_json::to_string(&file_to_route_path(&self.routes_dir, f)).unwrap(),
+          serde_json::to_string(&strip_path_route_groups(&file_to_route_path(
+            &self.routes_dir,
+            f
+          )))
+          .unwrap(),
           imports.identifier(&ModuleId::from(f.to_str().unwrap()), "metadata")
         )
       })
@@ -441,7 +457,7 @@ impl FarmPluginRecooler {
       }
 
       if let Some(route) = scan_result.routes.get(path) {
-        let path_js_str = serde_json::to_string(&path.to_string()).unwrap();
+        let path_js_str = serde_json::to_string(&strip_path_route_groups(path)).unwrap();
 
         let mut request_handlers = String::new();
         for method in &route.request_handlers {
