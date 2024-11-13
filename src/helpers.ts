@@ -90,7 +90,11 @@ export function actionsMiddleware(
     const params = new URL(ctx.req.url).searchParams;
     const action = actions[params.get("action")!];
     if (action) {
-      return await action(ctx, next);
+      const result = await action(ctx, next);
+      if ("toHTML" in result) {
+        return ctx.html(result.toHTML());
+      }
+      return result;
     }
 
     await next();

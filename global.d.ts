@@ -15,8 +15,14 @@ declare interface RouteHead {
   scripts?: JSX.IntrinsicElements["script"][];
 }
 
-declare interface ServerActionFn<TPayload = {}, TContext = HonoContext> {
-  (ctx: TContext, payload: TPayload): import("hono/types").HandlerResponse<any>;
+declare interface ServerActionFn<TPayload = any, TContext = HonoContext> {
+  (
+    ctx: TContext,
+    payload: TPayload,
+  ):
+    | import("hono/types").HandlerResponse<any>
+    | Promise<JSX.Element>
+    | JSX.Element;
 }
 
 declare interface RouteHeadFn<TContext = HonoContext> {
