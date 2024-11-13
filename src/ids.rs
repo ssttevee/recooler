@@ -19,7 +19,7 @@ impl GlobalIdGenerator {
 
     let name_id_map = self.module_name_id_map.get_mut(module_id).unwrap();
     if let Some(existing_id) = name_id_map.get(export_name) {
-      return String::from(&**existing_id);
+      return existing_id.clone();
     }
 
     let id = format!(
@@ -36,7 +36,7 @@ impl GlobalIdGenerator {
       },
     );
 
-    String::from(&*id)
+    id.clone()
   }
 
   /// for the given modules, return a map of ids to module exports
@@ -49,7 +49,7 @@ impl GlobalIdGenerator {
       if let Some(name_id_map) = self.module_name_id_map.get(module) {
         for (export_name, id) in name_id_map {
           exports.insert(
-            String::from(&**id),
+            id.clone(),
             ModuleExport {
               module_id: module.clone(),
               export_name: export_name.clone(),
