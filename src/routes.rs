@@ -223,10 +223,10 @@ impl FarmPluginRecooler {
       Compiler::new_without_internal_plugins(config, context.plugin_driver.plugins.clone())?;
 
     // copy module graph to new compiler
-    context
-      .module_graph
-      .read()
-      .copy_to(&mut *compiler.context().module_graph.write(), true)?;
+    // context
+    //   .module_graph
+    //   .read()
+    //   .copy_to(&mut *compiler.context().module_graph.write(), true)?;
 
     let module_graph = compiler.trace_module_graph()?;
 
