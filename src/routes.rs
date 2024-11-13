@@ -131,11 +131,11 @@ impl ScanResult {
         let layouts = self.layouts.get_layouts_for_path(&path);
         for layout in &layouts {
           if let Some(layout_handlers) = layout.handlers {
-            println!(
-              "merging {} handlers with layout {}:",
-              main_module.id.relative_path(),
-              layout.module_id.relative_path()
-            );
+            // println!(
+            //   "merging {} handlers with layout {}:",
+            //   main_module.id.relative_path(),
+            //   layout.module_id.relative_path()
+            // );
             for (method, action_ids) in &layout_handlers.action_handlers {
               for action_id in action_ids {
                 println!("  {:?}: {}", method, action_id);
@@ -282,7 +282,7 @@ impl FarmPluginRecooler {
       // println!("module decls {}", module.meta.as_script().ast.body.len());
       if let ModuleMetaData::Script(script) = module.meta.as_ref() {
         let mut ids = self.ids.lock().unwrap();
-        crate::htmx::ensure_registered_handlers(&module_id, ids.get_mut(), &script.ast);
+        crate::htmx::validate::ensure_registered_handlers(&module_id, ids.get_mut(), &script.ast);
 
         deps.push(module.clone());
       }

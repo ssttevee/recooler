@@ -203,8 +203,12 @@ impl Plugin for FarmPluginRecooler {
     let mut ids_lock = self.ids.lock().unwrap();
     let mut atoms_lock = self.atom_store.lock().unwrap();
 
-    htmx::transform_module(
+    htmx::transform::transform_module(
       param.module_id,
+      strip_path_route_groups(&routes::file_to_route_path(
+        &self.routes_dir,
+        &PathBuf::from(param.module_id.relative_path()),
+      )),
       ids_lock.get_mut(),
       atoms_lock.get_mut(),
       &mut script.ast,
@@ -566,7 +570,7 @@ impl FarmPluginRecooler {
         {}
 
         const app = /* #__PURE__ */ (() => {{
-            const app = new Hono({{ strict: false }});
+            const app = new Hono({{ strict: true }});
             {}
             return app;
         }})();
