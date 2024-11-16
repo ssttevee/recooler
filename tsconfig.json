@@ -5,12 +5,12 @@
     "target": "esnext",
     "module": "esnext",
     "moduleResolution": "bundler",
+    "jsx": "react-jsx",
+    "jsxImportSource": "easy-jsx-html-engine",
     "declaration": true,
     "skipLibCheck": true
   },
-  "exclude": [
-    "node_modules"
-  ],
+  "exclude": ["node_modules"],
   "include": [
     "**/*.ts",
     "global.d.ts",

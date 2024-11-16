@@ -1,9 +1,26 @@
-type HonoContext = import("hono").Context;
+type HonoContext = import("hono").Context<RouteEnv>;
+
+declare interface RouteEnv {}
 
 declare interface RouteProps<TContext = HonoContext> {
+  /**
+   * The request ID for the use with <Suspense />
+   */
   rid: string | number;
+
+  /**
+   * The current url, pre-parsed for convenience.
+   */
   url: URL;
+
+  /**
+   * The hono request context.
+   */
   ctx: TContext;
+
+  /**
+   * The head object used to render the head elements.
+   */
   head: RouteHead;
 }
 
@@ -15,28 +32,32 @@ declare interface RouteHead {
   scripts?: JSX.IntrinsicElements["script"][];
 }
 
-declare interface ServerActionFn<TPayload = any, TContext = HonoContext> {
-  (
-    ctx: TContext,
-    payload: TPayload,
-  ):
-    | import("hono/types").HandlerResponse<any>
-    | Promise<JSX.Element>
-    | JSX.Element;
-}
-
 declare interface RouteHeadFn<TContext = HonoContext> {
   (ctx: TContext, prev: RouteHead): Promise<RouteHead> | RouteHead;
 }
 
+declare interface FormActionFn<TPayload = any, TContext = HonoContext> {
+  (
+    ctx: TContext,
+    payload: TPayload,
+  ): import("hono/types").HandlerResponse<any> | JSX.Element;
+}
+
+declare interface EventHandlerFn<
+  TElement extends Element = any,
+  TEvent extends Event = any,
+> {
+  (this: TElement, event: TEvent): any;
+}
+
 declare namespace JSX {
   interface HtmlGlobalAttributes {
-    [event: `hx-on:${string}`]: (event: Event) => any;
-    [`hx-get`]?: ServerActionFn;
-    [`hx-post`]?: ServerActionFn;
-    [`hx-patch`]?: ServerActionFn;
-    [`hx-put`]?: ServerActionFn;
-    [`hx-delete`]?: ServerActionFn;
+    [event: `hx-on:${string}`]: EventHandlerFn;
+    [`hx-get`]?: FormActionFn;
+    [`hx-post`]?: FormActionFn;
+    [`hx-patch`]?: FormActionFn;
+    [`hx-put`]?: FormActionFn;
+    [`hx-delete`]?: FormActionFn;
   }
 }
 

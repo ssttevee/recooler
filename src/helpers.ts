@@ -3,6 +3,12 @@ import {
   createElement,
   Fragment,
   type SuspenseRequestID,
+  ErrorBoundary as _ErrorBoundary,
+  type ErrorBoundaryProps,
+  defaultCatch,
+  Suspense,
+  type SuspenseProps,
+  dangerouslyPreventEscaping,
 } from "easy-jsx-html-engine";
 import { renderToStream } from "easy-jsx-html-engine/stream-webapi";
 import { type Context, type Handler, Hono, type MiddlewareHandler } from "hono";
@@ -61,8 +67,8 @@ export function jsxRouteHandler(
       // ignore
     }
 
-    const head = await headFn(ctx);
     try {
+      const head = await headFn(ctx);
       return ctx.newResponse(
         await renderStream(waitUntil, rootContainer(component, script), {
           url,
@@ -124,3 +130,54 @@ export function renderHeadElements(
     head.scripts?.map((props) => createElement("script", props)),
   );
 }
+
+export function DefaultRootHOC(
+  Content: Component<RouteProps>,
+  clientScript?: string,
+) {
+  return (props: RouteProps) => {
+    return createElement(
+      Fragment,
+      {},
+      dangerouslyPreventEscaping("<!DOCTYPE html>"),
+      createElement(
+        "html",
+        {},
+        createElement("head", {}, renderHeadElements(props.head)),
+        createElement(
+          "body",
+          {},
+          createElement(Content, props),
+          clientScript && createElement("script", {}, clientScript),
+        ),
+      ),
+    );
+  };
+}
+
+export type { ErrorBoundaryProps, SuspenseProps };
+
+function wrapCatchFn(catchFn: ErrorBoundaryProps["catch"]) {
+  return (err: any) => {
+    if (err instanceof Response) {
+      // propagate the response up
+      throw err;
+    }
+
+    if (catchFn === null || catchFn === undefined) {
+      return defaultCatch(err);
+    }
+
+    if (typeof catchFn === "function") {
+      return catchFn(err);
+    }
+
+    return createElement(Fragment, {}, catchFn);
+  };
+}
+
+export function ErrorBoundary(props: ErrorBoundaryProps): JSX.Element {
+  return _ErrorBoundary({ ...props, catch: wrapCatchFn(props.catch) });
+}
+
+export { defaultCatch, Suspense };

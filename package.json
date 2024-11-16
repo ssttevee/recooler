@@ -6,9 +6,9 @@
   "type": "module",
   "license": "MIT",
   "devDependencies": {
-    "@farmfe/plugin-tools": "latest",
+    "@farmfe/plugin-tools": "^0.1.1",
     "@types/node": "^22.1.0",
-    "easy-jsx-html-engine": "^0.1.3",
+    "easy-jsx-html-engine": "^0.1.4",
     "hono": "^4.5.4",
     "typescript": "^5.5.4"
   },
