@@ -1,7 +1,7 @@
-use lazy_static::lazy_static;
 use std::collections::{HashMap, HashSet};
 
-use farmfe_core::{module::ModuleId, regex::Regex};
+use farmfe_core::{module::ModuleId, regex::Regex, serde_json};
+use farmfe_toolkit::lazy_static::lazy_static;
 
 pub(crate) struct UniqueImportIdentifiers {
   identifiers: HashSet<String>,

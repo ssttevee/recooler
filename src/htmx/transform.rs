@@ -1,10 +1,12 @@
 use std::{collections::HashSet, iter, rc::Rc};
 
-use super::{FormActionMethod, LocalHandlerIdentGenerator};
+use farmfe_core::{module::ModuleId, serde_json, swc_common::util::take::Take, swc_ecma_ast::*};
+use farmfe_toolkit::{
+  swc_atoms::{Atom, AtomStore},
+  swc_ecma_visit::{Visit, VisitMut, VisitMutWith, VisitWith},
+};
 
-use farmfe_core::{module::ModuleId, swc_common::util::take::Take, swc_ecma_ast::*};
-use farmfe_toolkit::swc_ecma_visit::{Visit, VisitMut, VisitMutWith, VisitWith};
-use swc_atoms::{Atom, AtomStore};
+use super::{FormActionMethod, LocalHandlerIdentGenerator};
 
 pub(crate) fn transform_module(
   module_id: &ModuleId,

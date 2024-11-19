@@ -24,16 +24,16 @@ use farmfe_core::{
   plugin::*,
   regex::Regex,
   relative_path::PathExt,
+  serde_json,
 };
 use farmfe_macro_plugin::farm_plugin;
-use lazy_static::lazy_static;
+use farmfe_toolkit::{lazy_static::lazy_static, swc_atoms::AtomStore};
 
 use head::build_head_expr;
 use htmx::FormActionMethod;
 use ids::GlobalIds;
 use imports::UniqueImportIdentifiers;
 use routes::file_to_route_path;
-use swc_atoms::AtomStore;
 
 #[derive(serde::Deserialize)]
 pub struct RecoolerOptions {

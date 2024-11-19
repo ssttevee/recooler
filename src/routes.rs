@@ -13,9 +13,9 @@ use farmfe_core::{
   parking_lot::{MappedRwLockReadGuard, RwLockReadGuard},
   regex::Regex,
   relative_path::PathExt,
+  serde_json,
 };
-use lazy_static::lazy_static;
-
+use farmfe_toolkit::lazy_static::lazy_static;
 use walkdir::WalkDir;
 
 use crate::{

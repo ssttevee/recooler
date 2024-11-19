@@ -1,10 +1,12 @@
 use std::collections::HashSet;
 
-use super::{FormActionMethod, LocalHandlerIdentGenerator, ACTION_DECL_PREFIX, EVENT_DECL_PREFIX};
+use farmfe_core::{module::ModuleId, regex::Regex, serde_json, swc_ecma_ast::*};
+use farmfe_toolkit::{
+  lazy_static::lazy_static,
+  swc_ecma_visit::{Visit, VisitWith},
+};
 
-use farmfe_core::{module::ModuleId, regex::Regex, swc_ecma_ast::*};
-use farmfe_toolkit::swc_ecma_visit::{Visit, VisitWith};
-use lazy_static::lazy_static;
+use super::{FormActionMethod, LocalHandlerIdentGenerator, ACTION_DECL_PREFIX, EVENT_DECL_PREFIX};
 
 lazy_static! {
   static ref ACTION_REPLACEMENT_STRING_PATTERN: Regex =
