@@ -52,6 +52,7 @@ src
 ├── ...
 ├── routes
 │   ├── (public)
+│   │   ├── [[other]]/index.tsx
 │   │   ├── about/index.tsx
 │   │   ├── blog
 │   │   │   ├── [post]/index.tsx
@@ -73,6 +74,7 @@ This will generate the following hono routes:
 
 ```
 /
+/:other{.+}
 /about
 /admin
 /blog
@@ -86,6 +88,10 @@ The `layout.tsx` files are used as the default layout for all routes in the dire
 The `middleware[@{name}].ts` files are used to define hono middleware for the route. Middleware files may contain JSX and have the `.tsx` extension. Middleware file name may include a name to use more than one middleware for a particular route using an `@` after the word `middleware`. Middleware is executed in the alphabetical order of the file name. It is convention to add a number to the name to guarantee a certain order of execution.
 
 The `(parenthesized)` directory names are used to group routes together for layout purposes and are completely removed from the final route. Any duplicate routes resulting from the parenthesized directory names are added to hono like any other route, it is up to hono (i.e. the first one) to pick which one to use.
+
+The `[param]` directory name are replaced with a path parameter. Please see the [hono](https://hono.dev/docs/api/routing#path-parameter) for more information.
+
+The `[[wildcard]]` directory name is a special case that is of the path parameter that matches multiple path segments. In hono terms, it is replaced with `:wildcard{.+}`. Please see the [hono](https://hono.dev/docs/api/routing#path-parameter) for more information.
 
 ### Components
 
