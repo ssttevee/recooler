@@ -49,6 +49,7 @@ pub(crate) struct RouteInfo {
   pub(crate) module_id: ModuleId,
   pub(crate) page_component: Option<PageComponentInfo>,
   pub(crate) request_handlers: HashSet<RequestHandlerMethod>,
+  pub(crate) on_request: bool,
   pub(crate) on_load: bool,
   pub(crate) head: Option<HeadType>,
 }
@@ -169,6 +170,7 @@ impl ScanResult {
           module_id: main_module.id.clone(),
           page_component,
           request_handlers,
+          on_request: exports.contains("onRequest"),
           on_load: exports.contains("onLoad"),
           head: find_head_export_type(script),
         },

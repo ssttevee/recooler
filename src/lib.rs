@@ -464,6 +464,15 @@ impl FarmPluginRecooler {
         let path_js_str = serde_json::to_string(&strip_path_route_groups(path)).unwrap();
 
         let mut request_handlers = String::new();
+        if route.on_request {
+          request_handlers += format!(
+            "app.all({}, {});\n",
+            path_js_str,
+            import_idents.identifier(&route.module_id, "onRequest")
+          )
+          .as_str();
+        }
+
         for method in &route.request_handlers {
           request_handlers += format!(
             "app.{}({}, {});\n",

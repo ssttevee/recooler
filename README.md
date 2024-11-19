@@ -66,7 +66,6 @@ src
 │   │   └── layout.tsx
 │   ├── index.tsx
 │   └── middleware.ts
-└── entrypoint.ts
 ├── ...
 ```
 
@@ -149,7 +148,7 @@ declare interface RouteHeadFn<TContext = HonoContext> {
 
 ### Request Handlers
 
-Request handlers are an escape hatch to use regular hono request handlers. They are defined by exporting `onGet`, `onPost`, `onPatch`, `onPut`, `onDelete`, or `onOptions` functions. There is an edge case when using `onGet` with a default page component export, in which case the `onGet` function will take priority, but may use hono's `next` function to continue to the regular page component handler. In this way, they are very similar to middleware but only run on a specific request method.
+Request handlers are an escape hatch to use regular hono request handlers. They are defined by exporting `onGet`, `onPost`, `onPatch`, `onPut`, `onDelete`, `onOptions`, or `onRequest` functions. `onRequest` will handle all methods, while the other will handle their own respective methods.
 
 ### Layouts
 
@@ -271,6 +270,21 @@ Note that this requires some level of server support and may not work in every s
 
 For more information about `<Suspense />`, please see the easy-jsx-html-engine documentation.
 
+## hono handler order
+
+Hono middleware/handlers have an execution order.
+
+Here is what it should be:
+
+```
+1. action handlers
+2. middleware
+3. onRequest
+   ├── onPost, onPatch, onPut, onDelete, onOptions
+   └── onGet
+       └── (page handler)
+```
+
 ## htmx
 
 While recooler is designed around htmx, it is not a requirement. It is fully functional as a standalong routing framework.
@@ -317,6 +331,6 @@ The inspiration for this project came from my nostalgia for my childhood days as
 
 ## Disclaimer
 
-This is my side projec that I'm using for my other personal projects. While I do use it in a "production" capacity, it is nowhere near "battle-tested". I am not responsible for any damage that may occur from using this project. Use at your own risk.
+This is my side project that I'm using for my other personal projects. While I do use it in a "production" capacity, it is nowhere near "battle-tested". I am not responsible for any damage that may occur from using this project. Use at your own risk.
 
 Pull requests are welcome, but please be nice.
