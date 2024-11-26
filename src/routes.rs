@@ -266,11 +266,18 @@ impl FarmPluginRecooler {
     );
 
     let mut deps = Vec::<Module>::new();
+    let mut visited = HashSet::<String>::new();
 
     while let Some(module_id) = modules_queue.pop_front() {
       if !module_id.starts_with(&self.src_dir) {
         continue;
       }
+
+      if visited.contains(&module_id) {
+        continue;
+      }
+
+      visited.insert(module_id.clone());
 
       if let Some(deps) = module_graph.edges.get(&module_id) {
         modules_queue.extend(deps.iter().cloned());
