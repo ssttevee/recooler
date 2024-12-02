@@ -158,6 +158,8 @@ Layout are implemented as "Higher Order Components", or HOCs, that wrap the page
 
 Regular hono middleware may be exported from a middleware module to take effect for the particular route. The behavior is the same as calling `app.use("/route", middleware)` on a hono instance. The only special sauce from Recooler is the folder directory structure and ordering by file name.
 
+Middleware files placed directly in a group directory (i.e. a parenthesized directory name) will only apply to the routes in the group. This is unlike regular middleware which will handle all requests matching the prefix regardless of whether there is a route handler.
+
 ### Form Actions
 
 Any `hx-{method}` attributes with function values will be converted to a form action. This works for all components within the configured source directory (which is `src` by default), including layouts and the root component. The function may optionally be async and return a JSX element or a hono response.

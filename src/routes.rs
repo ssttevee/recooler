@@ -20,9 +20,10 @@ use walkdir::WalkDir;
 
 use crate::{
   es_ast_helpers::{find_exports, find_head_export_type},
-  head::HeadType,
-  htmx::RequestHandlerMethod,
+  head::{build_head_expr, HeadType},
+  htmx::{FormActionMethod, RequestHandlerMethod},
   ids::ComponentHandlerIds,
+  imports::UniqueImportIdentifiers,
   layouts::LayoutTree,
   FarmPluginRecooler, GlobalIds,
 };
@@ -39,12 +40,14 @@ pub(crate) struct PageComponentLayoutItem {
   pub(crate) head: Option<HeadType>,
 }
 
+#[derive(Clone)]
 pub(crate) struct PageComponentInfo {
   pub(crate) handlers: ComponentHandlerIds,
   pub(crate) layouts: Vec<PageComponentLayoutItem>,
 }
 
 /// Critical route information
+#[derive(Clone)]
 pub(crate) struct RouteInfo {
   pub(crate) module_id: ModuleId,
   pub(crate) page_component: Option<PageComponentInfo>,
@@ -60,6 +63,324 @@ pub(crate) struct RootComponentInfo {
   pub(crate) head: Option<HeadType>,
 }
 
+#[derive(Default)]
+pub(crate) struct RouteAndMiddleware {
+  route: Option<RouteInfo>,
+  middleware: Option<HashSet<ModuleId>>,
+}
+
+/// routes are split at group boundaries (i.e. parenthesized dir names), so each
+/// tree node contains multiple routes
+#[derive(Default)]
+pub(crate) struct RouteGroupTree {
+  routes_and_middlewares: HashMap<String, RouteAndMiddleware>,
+  children: HashMap<String, Box<RouteGroupTree>>,
+}
+
+impl FarmPluginRecooler {
+  pub(crate) fn generate_route_statements(
+    &self,
+    context: &Arc<CompilationContext>,
+    import_idents: &mut UniqueImportIdentifiers,
+    hono_ident: String,
+    root_action_methods: &HashSet<FormActionMethod>,
+    root_hoc_ident: &String,
+    root_component: &Option<RootComponentInfo>,
+    tree: &RouteGroupTree,
+    inline_middlewares: Option<Vec<ModuleId>>,
+  ) -> Result<String> {
+    let mut handlers = String::new();
+
+    let should_inline_middleware = inline_middlewares.is_some();
+    let mut base_middleware = inline_middlewares.unwrap_or_default();
+
+    if should_inline_middleware {
+      if let Some(RouteAndMiddleware {
+        middleware: Some(root_middleware),
+        ..
+      }) = tree.routes_and_middlewares.get("/")
+      {
+        let mut sorted = root_middleware.iter().cloned().collect::<Vec<_>>();
+        sorted.sort();
+
+        base_middleware.extend(sorted.clone());
+      }
+    }
+
+    for (group_path, group_tree) in &tree.children {
+      let group_hono = hono_ident.clone() + "$";
+      let fixed_group_path = &group_path[0..group_path.rfind("/").unwrap() + 1];
+
+      handlers += format!(
+        r#"{}.route({}, (() => {{
+            const {} = new Hono();
+            {}
+            return {2};
+        }})());"#,
+        hono_ident,
+        serde_json::to_string(fixed_group_path).unwrap(),
+        group_hono,
+        self.generate_route_statements(
+          context,
+          import_idents,
+          group_hono.clone(),
+          root_action_methods,
+          root_hoc_ident,
+          root_component,
+          group_tree,
+          if fixed_group_path == "/" {
+            Some(base_middleware.clone())
+          } else {
+            None
+          },
+        )?,
+      )
+      .as_str();
+    }
+
+    let mut sorted_routes_and_middlewares = tree.routes_and_middlewares.iter().collect::<Vec<_>>();
+    sorted_routes_and_middlewares.sort_by(|a, b| {
+      // put parameterized routes after other routes
+      if a.0.ends_with("{.+}") && !b.0.ends_with("{.+}") {
+        std::cmp::Ordering::Greater
+      } else if !a.0.ends_with("{.+}") && b.0.ends_with("{.+}") {
+        std::cmp::Ordering::Less
+      } else {
+        a.0.cmp(&b.0)
+      }
+    });
+
+    for (path, RouteAndMiddleware { route, middleware }) in sorted_routes_and_middlewares {
+      let mut combined_middleware = base_middleware.clone();
+
+      if let Some(module_ids) = middleware {
+        let mut sorted_module_ids = module_ids.iter().cloned().collect::<Vec<_>>();
+        sorted_module_ids.sort();
+        combined_middleware.extend(sorted_module_ids);
+      }
+
+      let pathjs = serde_json::to_string(path).unwrap();
+      // if path.ends_with("{.+}") {
+      //   pathjs = format!(
+      //     "[{}, {}]",
+      //     serde_json::to_string(&String::from(&path[0..path.rfind("/:").unwrap() + 1])).unwrap(),
+      //     pathjs
+      //   );
+      // }
+
+      let mut route_params_prefix = pathjs.clone() + ", ";
+
+      if should_inline_middleware {
+        for module_id in combined_middleware {
+          route_params_prefix +=
+            format!("{}, ", import_idents.identifier(&module_id, "default")).as_str()
+        }
+      } else {
+        for module_id in combined_middleware {
+          let use_params_prefix = if path == "/" {
+            String::from("\"*\"")
+          } else {
+            serde_json::to_string(&(path.clone() + "/*")).unwrap()
+          };
+
+          handlers += format!(
+            "{}.use({}{});\n",
+            hono_ident,
+            use_params_prefix + ", ",
+            import_idents.identifier(&module_id, "default"),
+          )
+          .as_str();
+        }
+      }
+
+      if let Some(route) = route {
+        let mut hono_app_obj = hono_ident.clone();
+
+        let mut request_handlers = String::new();
+        if route.on_request {
+          request_handlers += format!(
+            "{}.all({}{})",
+            hono_app_obj,
+            route_params_prefix,
+            import_idents.identifier(&route.module_id, "onRequest")
+          )
+          .as_str();
+
+          hono_app_obj = String::new();
+          route_params_prefix = String::new();
+        }
+
+        for method in &route.request_handlers {
+          request_handlers += format!(
+            "{}.{}({}{})",
+            hono_app_obj,
+            format!("{:?}", method).to_lowercase(),
+            route_params_prefix,
+            import_idents.identifier(&route.module_id, format!("on{:?}", method)),
+          )
+          .as_str();
+
+          hono_app_obj = String::new();
+          route_params_prefix = String::new();
+        }
+
+        if hono_app_obj.is_empty() {
+          request_handlers += ";\n";
+        }
+
+        let mut action_handlers = String::new();
+        let mut page_handler = String::new();
+        if let Some(page) = &route.page_component {
+          let mut methods = page.handlers.action_handlers.keys().collect::<Vec<_>>();
+          methods.sort();
+
+          let mut root_methods_copy = root_action_methods.clone();
+          for method in methods {
+            let mut actions = String::new();
+
+            for action_id in page.handlers.action_handlers.get(method).unwrap() {
+              if let Some(export) = {
+                let lock = self.ids.lock().unwrap();
+                let ids = lock.borrow();
+                ids.form_action_ids.id_export(action_id)
+              } {
+                actions += format!(
+                  "{}: {}, ",
+                  serde_json::to_string(action_id).unwrap(),
+                  import_idents.identifier(&export.module_id, export.export_name),
+                )
+                .as_str();
+              }
+            }
+
+            let mut route_params = pathjs.clone();
+            if root_methods_copy.contains(method) {
+              route_params += format!(", root{:?}ActionsMiddleware", method).as_str();
+              root_methods_copy.remove(method);
+            }
+
+            action_handlers += format!(
+              "{}.{}({}, actionsMiddleware({{{}}}));\n",
+              hono_ident,
+              format!("{:?}", method).to_lowercase().as_str(),
+              route_params,
+              actions,
+            )
+            .as_str();
+          }
+
+          let mut remaining_root_methods = root_methods_copy.into_iter().collect::<Vec<_>>();
+          remaining_root_methods.sort();
+          for method in remaining_root_methods {
+            action_handlers += format!(
+              "{}.{}({}, root{:?}ActionsMiddleware);\n",
+              hono_ident,
+              format!("{:?}", method).to_lowercase().as_str(),
+              pathjs,
+              method
+            )
+            .as_str();
+          }
+
+          let mut component_expr = import_idents.identifier(&route.module_id, "default");
+          for layout_module in &page.layouts {
+            component_expr = format!(
+              "{}({})",
+              import_idents.identifier(&layout_module.module_id, "default"),
+              component_expr
+            );
+          }
+
+          let mut page_handler_params = format!(
+            "{}, {}, {}",
+            root_hoc_ident,
+            component_expr,
+            build_head_expr(import_idents, root_component, &page.layouts, &route)
+          );
+
+          if let Some(client_script) = self.build_client_script(context, &route.module_id)? {
+            page_handler_params += ", ";
+            page_handler_params += serde_json::to_string(&client_script).unwrap().as_str();
+          }
+
+          page_handler += format!(
+            "{}.get({}, jsxRouteHandler({}));\n",
+            hono_ident, pathjs, page_handler_params
+          )
+          .as_str();
+        }
+
+        handlers += action_handlers.as_str();
+        handlers += request_handlers.as_str();
+        handlers += page_handler.as_str();
+      }
+    }
+
+    Ok(handlers)
+  }
+}
+
+impl RouteGroupTree {
+  fn from_routes_and_middlewares(
+    routes_and_middlewares: HashMap<String, RouteAndMiddleware>,
+  ) -> Self {
+    let mut groups = HashMap::<String, HashMap<String, RouteAndMiddleware>>::new();
+    let mut current = HashMap::<String, RouteAndMiddleware>::new();
+    for (path, entry) in routes_and_middlewares {
+      if let Some(group) = PATH_COMPONENT_ROUTE_GROUP_PATTERN
+        .captures(&path)
+        .and_then(|c| c.get(1))
+      {
+        // found a group boundary, let save it for later
+        let (head, mut tail) = path.split_at(group.end() + 1);
+        if tail == "" {
+          tail = "/";
+        }
+
+        groups
+          .entry(head.to_string())
+          .or_default()
+          .insert(tail.to_string(), entry);
+      } else {
+        current.insert(path.clone(), entry);
+      }
+    }
+
+    Self {
+      routes_and_middlewares: current,
+      children: HashMap::from_iter(
+        groups
+          .into_iter()
+          .map(|(k, v)| (k, Box::new(Self::from_routes_and_middlewares(v)))),
+      ),
+    }
+  }
+}
+
+impl ScanResult {
+  /// returns a route tree node for the routes in this scan result
+  pub(crate) fn tree(&self) -> RouteGroupTree {
+    RouteGroupTree::from_routes_and_middlewares(HashMap::from_iter(
+      self
+        .routes
+        .keys()
+        .chain(self.middlewares.keys())
+        .cloned()
+        .collect::<HashSet<_>>()
+        .into_iter()
+        .map(|path| {
+          let entry = RouteAndMiddleware {
+            route: self.routes.get(&path).cloned(),
+            middleware: self.middlewares.get(&path).cloned(),
+          };
+          (path, entry)
+        }),
+    ))
+  }
+}
+
+/// maps are index by route pathnames with leading slash before the route groups
+/// (i.e. parenthesized dir names) are stripped.
 pub(crate) struct ScanResult {
   pub(crate) routes: HashMap<String, RouteInfo>,
   pub(crate) layouts: LayoutTree,
@@ -302,6 +623,8 @@ impl FarmPluginRecooler {
 }
 
 lazy_static! {
+  static ref PATH_COMPONENT_ROUTE_GROUP_PATTERN: Regex =
+    Regex::new(r"/\(([^\)/]+)\)(/|$)").unwrap();
   static ref PATH_COMPONENT_ROUTE_PARAM_PATTERN: Regex =
     Regex::new(r"^\[([^\[\]][^\]]*)\]$").unwrap();
   static ref PATH_COMPONENT_ROUTE_WILDCARD_PATTERN: Regex =

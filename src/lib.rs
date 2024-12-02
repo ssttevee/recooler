@@ -29,7 +29,6 @@ use farmfe_core::{
 use farmfe_macro_plugin::farm_plugin;
 use farmfe_toolkit::{lazy_static::lazy_static, swc_atoms::AtomStore};
 
-use head::build_head_expr;
 use htmx::FormActionMethod;
 use ids::GlobalIds;
 use imports::UniqueImportIdentifiers;
@@ -386,15 +385,7 @@ impl FarmPluginRecooler {
     let scan_result = self.scan_routes(context)?;
 
     let mut import_idents = UniqueImportIdentifiers::new();
-
-    let sorted_paths = {
-      let mut paths = HashSet::<String>::new();
-      paths.extend(scan_result.routes.keys().cloned());
-      paths.extend(scan_result.middlewares.keys().cloned());
-      let mut paths = paths.into_iter().collect::<Vec<String>>();
-      paths.sort();
-      paths
-    };
+    let mut after_imports = String::new();
 
     let mut handlers = String::new();
     let (root_hoc_ident, root_action_methods): (String, HashSet<FormActionMethod>) = if scan_result
@@ -436,7 +427,7 @@ impl FarmPluginRecooler {
         )
       } else {
         // generate a identity component; this is a workaround for the case where there is no root component
-        handlers += r#"
+        after_imports += r#"
         function RootHOC(Component) {
           return Component
         }
@@ -448,134 +439,158 @@ impl FarmPluginRecooler {
       Default::default()
     };
 
-    for path in &sorted_paths {
-      if let Some(middlewares) = scan_result.middlewares.get(path) {
-        for module_id in middlewares {
-          handlers += format!(
-            "app.use({}, {});\n",
-            serde_json::to_string(&format!("{}/*", if path == "/" { "" } else { path })).unwrap(),
-            import_idents.identifier(&module_id, "default"),
-          )
-          .as_str();
-        }
-      }
+    handlers += self
+      .generate_route_statements(
+        context,
+        &mut import_idents,
+        "app".to_string(),
+        &root_action_methods,
+        &root_hoc_ident,
+        &scan_result.root_component,
+        &scan_result.tree(),
+        None,
+      )?
+      .as_str();
 
-      if let Some(route) = scan_result.routes.get(path) {
-        let path_js_str = serde_json::to_string(&strip_path_route_groups(path)).unwrap();
+    // let sorted_paths = {
+    //   let mut paths = HashSet::<String>::new();
+    //   paths.extend(scan_result.routes.keys().cloned());
+    //   paths.extend(scan_result.middlewares.keys().cloned());
+    //   let mut paths = paths.into_iter().collect::<Vec<String>>();
+    //   paths.sort();
+    //   paths
+    // };
 
-        let mut request_handlers = String::new();
-        if route.on_request {
-          request_handlers += format!(
-            "app.all({}, {});\n",
-            path_js_str,
-            import_idents.identifier(&route.module_id, "onRequest")
-          )
-          .as_str();
-        }
+    // for path in &sorted_paths {
+    //   if let Some(middlewares) = scan_result.middlewares.get(path) {
+    //     for module_id in middlewares {
+    //       handlers += format!(
+    //         "app.use({}, {});\n",
+    //         serde_json::to_string(&format!("{}/*", if path == "/" { "" } else { path })).unwrap(),
+    //         import_idents.identifier(&module_id, "default"),
+    //       )
+    //       .as_str();
+    //     }
+    //   }
 
-        for method in &route.request_handlers {
-          request_handlers += format!(
-            "app.{}({}, {});\n",
-            format!("{:?}", method).to_lowercase(),
-            path_js_str,
-            import_idents.identifier(&route.module_id, format!("on{:?}", method)),
-          )
-          .as_str();
-        }
+    //   if let Some(route) = scan_result.routes.get(path) {
+    //     let path_js_str = serde_json::to_string(&strip_path_route_groups(path)).unwrap();
 
-        let mut action_handlers = String::new();
-        let mut page_handler = String::new();
-        if let Some(page) = &route.page_component {
-          let mut methods = page.handlers.action_handlers.keys().collect::<Vec<_>>();
-          methods.sort();
+    //     let mut request_handlers = String::new();
+    //     if route.on_request {
+    //       request_handlers += format!(
+    //         "app.all({}, {});\n",
+    //         path_js_str,
+    //         import_idents.identifier(&route.module_id, "onRequest")
+    //       )
+    //       .as_str();
+    //     }
 
-          let mut root_methods_copy = root_action_methods.clone();
-          for method in methods {
-            let mut actions = String::new();
+    //     for method in &route.request_handlers {
+    //       request_handlers += format!(
+    //         "app.{}({}, {});\n",
+    //         format!("{:?}", method).to_lowercase(),
+    //         path_js_str,
+    //         import_idents.identifier(&route.module_id, format!("on{:?}", method)),
+    //       )
+    //       .as_str();
+    //     }
 
-            for action_id in page.handlers.action_handlers.get(method).unwrap() {
-              if let Some(export) = {
-                let lock = self.ids.lock().unwrap();
-                let ids = lock.borrow();
-                ids.form_action_ids.id_export(action_id)
-              } {
-                actions += format!(
-                  "{}: {}, ",
-                  serde_json::to_string(action_id).unwrap(),
-                  import_idents.identifier(&export.module_id, export.export_name),
-                )
-                .as_str();
-              }
-            }
+    //     let mut action_handlers = String::new();
+    //     let mut page_handler = String::new();
+    //     if let Some(page) = &route.page_component {
+    //       let mut methods = page.handlers.action_handlers.keys().collect::<Vec<_>>();
+    //       methods.sort();
 
-            let mut route_params = path_js_str.clone();
-            if root_methods_copy.contains(method) {
-              route_params += format!(", root{:?}ActionsMiddleware", method).as_str();
-              root_methods_copy.remove(method);
-            }
+    //       let mut root_methods_copy = root_action_methods.clone();
+    //       for method in methods {
+    //         let mut actions = String::new();
 
-            action_handlers += format!(
-              "app.{}({}, actionsMiddleware({{{}}}));\n",
-              format!("{:?}", method).to_lowercase().as_str(),
-              route_params,
-              actions,
-            )
-            .as_str();
-          }
+    //         for action_id in page.handlers.action_handlers.get(method).unwrap() {
+    //           if let Some(export) = {
+    //             let lock = self.ids.lock().unwrap();
+    //             let ids = lock.borrow();
+    //             ids.form_action_ids.id_export(action_id)
+    //           } {
+    //             actions += format!(
+    //               "{}: {}, ",
+    //               serde_json::to_string(action_id).unwrap(),
+    //               import_idents.identifier(&export.module_id, export.export_name),
+    //             )
+    //             .as_str();
+    //           }
+    //         }
 
-          let mut remaining_root_methods = root_methods_copy.into_iter().collect::<Vec<_>>();
-          remaining_root_methods.sort();
-          for method in remaining_root_methods {
-            action_handlers += format!(
-              "app.{}({}, root{:?}ActionsMiddleware);\n",
-              format!("{:?}", method).to_lowercase().as_str(),
-              path_js_str,
-              method
-            )
-            .as_str();
-          }
+    //         let mut route_params = path_js_str.clone();
+    //         if root_methods_copy.contains(method) {
+    //           route_params += format!(", root{:?}ActionsMiddleware", method).as_str();
+    //           root_methods_copy.remove(method);
+    //         }
 
-          let mut component_expr = import_idents.identifier(&route.module_id, "default");
-          for layout_module in &page.layouts {
-            component_expr = format!(
-              "{}({})",
-              import_idents.identifier(&layout_module.module_id, "default"),
-              component_expr
-            );
-          }
+    //         action_handlers += format!(
+    //           "app.{}({}, actionsMiddleware({{{}}}));\n",
+    //           format!("{:?}", method).to_lowercase().as_str(),
+    //           route_params,
+    //           actions,
+    //         )
+    //         .as_str();
+    //       }
 
-          let mut params = format!(
-            "{}, {}, {}",
-            root_hoc_ident,
-            component_expr,
-            build_head_expr(
-              &mut import_idents,
-              &scan_result.root_component,
-              &page.layouts,
-              &route
-            )
-          );
+    //       let mut remaining_root_methods = root_methods_copy.into_iter().collect::<Vec<_>>();
+    //       remaining_root_methods.sort();
+    //       for method in remaining_root_methods {
+    //         action_handlers += format!(
+    //           "app.{}({}, root{:?}ActionsMiddleware);\n",
+    //           format!("{:?}", method).to_lowercase().as_str(),
+    //           path_js_str,
+    //           method
+    //         )
+    //         .as_str();
+    //       }
 
-          if let Some(client_script) = self.build_client_script(context, &route.module_id)? {
-            params += ", ";
-            params += serde_json::to_string(&client_script).unwrap().as_str();
-          }
+    //       let mut component_expr = import_idents.identifier(&route.module_id, "default");
+    //       for layout_module in &page.layouts {
+    //         component_expr = format!(
+    //           "{}({})",
+    //           import_idents.identifier(&layout_module.module_id, "default"),
+    //           component_expr
+    //         );
+    //       }
 
-          page_handler +=
-            format!("app.get({}, jsxRouteHandler({}));\n", path_js_str, params).as_str();
-        }
+    //       let mut params = format!(
+    //         "{}, {}, {}",
+    //         root_hoc_ident,
+    //         component_expr,
+    //         build_head_expr(
+    //           &mut import_idents,
+    //           &scan_result.root_component,
+    //           &page.layouts,
+    //           &route
+    //         )
+    //       );
 
-        handlers += action_handlers.as_str();
-        handlers += request_handlers.as_str();
-        handlers += page_handler.as_str();
-      }
-    }
+    //       if let Some(client_script) = self.build_client_script(context, &route.module_id)? {
+    //         params += ", ";
+    //         params += serde_json::to_string(&client_script).unwrap().as_str();
+    //       }
+
+    //       page_handler +=
+    //         format!("app.get({}, jsxRouteHandler({}));\n", path_js_str, params).as_str();
+    //     }
+
+    //     handlers += action_handlers.as_str();
+    //     handlers += request_handlers.as_str();
+    //     handlers += page_handler.as_str();
+    //   }
+    // }
 
     return Ok(
       format!(
         r#"
         import {{ Hono }} from "hono";
         import {{ jsxRouteHandler, actionsMiddleware, buildHeadFn, makeCloudflarePagesHandler }} from "farm-plugin-recooler/helpers";
+        {}
+
         {}
 
         const app = /* #__PURE__ */ (() => {{
@@ -588,6 +603,7 @@ impl FarmPluginRecooler {
         export const onRequest = /* #__PURE__ */ makeCloudflarePagesHandler(app);
         "#,
         import_idents.imports_str(),
+        after_imports,
         handlers,
       )
       .to_string(),
