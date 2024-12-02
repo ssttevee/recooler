@@ -61,7 +61,8 @@ impl<'a> ComponentHandlerValidationVisitor<'a> {
     let export_name = self.local_idents.next_action_ident(method);
     if !self.exported_handlers.contains(&export_name) {
       panic!(
-        "unmatched form action export name in module: {}",
+        "unmatched form action export name in module {}: {}",
+        self.module_id.relative_path(),
         export_name
       );
     }

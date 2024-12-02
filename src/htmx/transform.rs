@@ -112,7 +112,7 @@ impl<'a> ComponentTransformVisitor<'a> {
     vec![]
   }
 
-  fn add_action(&mut self, method: FormActionMethod, node: &mut KeyValueProp) {
+  fn add_action(&mut self, method: FormActionMethod, value_node: &mut Box<Expr>) {
     // println!("called add_action");
     let export_name = self.idents.next_action_ident(method);
     let form_action_id = self
@@ -136,7 +136,7 @@ impl<'a> ComponentTransformVisitor<'a> {
         .insert(form_action_id.clone(), method);
     }
 
-    let captured_vars = self.get_captured_variables(&node.value);
+    let captured_vars = self.get_captured_variables(value_node);
     let mut replacement = Box::new(Expr::Tpl(Tpl {
       quasis: vec![
         TplElement {
@@ -182,7 +182,7 @@ impl<'a> ComponentTransformVisitor<'a> {
       span: Default::default(),
     }));
 
-    std::mem::swap(&mut node.value, &mut replacement);
+    std::mem::swap(value_node, &mut replacement);
 
     self.new_decls.push(Decl::Var(Box::new(VarDecl {
       kind: VarDeclKind::Const,
@@ -339,7 +339,7 @@ impl<'a> ComponentTransformVisitor<'a> {
     })));
   }
 
-  fn add_event_handler(&mut self, node: &mut KeyValueProp) {
+  fn add_event_handler(&mut self, value_node: &mut Box<Expr>) {
     let export_name = self.idents.next_event_ident();
 
     let event_handler_id = self
@@ -359,7 +359,7 @@ impl<'a> ComponentTransformVisitor<'a> {
       serde_json::to_string(&event_handler_id).unwrap()
     ))));
 
-    std::mem::swap(&mut node.value, &mut replacement);
+    std::mem::swap(value_node, &mut replacement);
 
     self.new_decls.push(Decl::Var(Box::new(VarDecl {
       kind: VarDeclKind::Const,
@@ -461,11 +461,48 @@ impl<'a> VisitMut for ComponentTransformVisitor<'a> {
     visit_children_with_scope!(self, block, idents);
   }
 
+  fn visit_mut_jsx_attr(&mut self, node: &mut JSXAttr) {
+    if let JSXAttrName::Ident(name) = &node.name {
+      if let Some(JSXAttrValue::JSXExprContainer(JSXExprContainer {
+        expr: JSXExpr::Expr(expr),
+        ..
+      })) = &mut node.value
+      {
+        let key = name.sym.as_str();
+        if key.starts_with("hx-on:") {
+          self.add_event_handler(expr);
+          return;
+        }
+
+        if key.starts_with("hx-") {
+          macro_rules! form_action {
+            ($method:ident) => {
+              if &key[3..]
+                == const_format::map_ascii_case!(const_format::Case::Lower, stringify!($method))
+              {
+                self.add_action(FormActionMethod::$method, expr);
+                return;
+              }
+            };
+          }
+
+          form_action!(Get);
+          form_action!(Post);
+          form_action!(Put);
+          form_action!(Delete);
+          form_action!(Patch);
+        }
+      }
+    }
+
+    node.visit_mut_children_with(self);
+  }
+
   fn visit_mut_key_value_prop(&mut self, node: &mut KeyValueProp) {
     if node.key.is_str() {
       let key = node.key.as_str().unwrap().value.as_str();
       if key.starts_with("hx-on:") {
-        self.add_event_handler(node);
+        self.add_event_handler(&mut node.value);
         return;
       }
 
@@ -475,7 +512,7 @@ impl<'a> VisitMut for ComponentTransformVisitor<'a> {
             if &key[3..]
               == const_format::map_ascii_case!(const_format::Case::Lower, stringify!($method))
             {
-              self.add_action(FormActionMethod::$method, node);
+              self.add_action(FormActionMethod::$method, &mut node.value);
               return;
             }
           };
