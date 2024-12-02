@@ -38,6 +38,7 @@ use routes::file_to_route_path;
 pub struct RecoolerOptions {
   pub src_dir: Option<String>,
   pub routes_dir: Option<String>,
+  pub reuse_modules: Option<bool>,
 }
 
 #[farm_plugin]
@@ -48,6 +49,7 @@ pub struct FarmPluginRecooler {
   atom_store: Mutex<RefCell<AtomStore>>,
   scanned_dir: farmfe_core::parking_lot::RwLock<Option<routes::ScannedDir>>,
   scanned_routes: farmfe_core::parking_lot::RwLock<Option<routes::ScanResult>>,
+  reuse_modules: bool,
 }
 
 impl FarmPluginRecooler {
@@ -75,6 +77,7 @@ impl FarmPluginRecooler {
       atom_store: Default::default(),
       scanned_routes: Default::default(),
       scanned_dir: Default::default(),
+      reuse_modules: options.reuse_modules.unwrap_or(false),
     }
   }
 }

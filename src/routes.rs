@@ -463,14 +463,6 @@ impl ScanResult {
             //   main_module.id.relative_path(),
             //   layout.module_id.relative_path()
             // );
-            for (method, action_ids) in &layout_handlers.action_handlers {
-              for action_id in action_ids {
-                println!("  {:?}: {}", method, action_id);
-              }
-            }
-            for event_id in &layout_handlers.event_handlers {
-              println!("  event: {}", event_id);
-            }
             handlers = handlers.merged(layout_handlers);
           }
         }
@@ -539,6 +531,7 @@ fn copy_dependency(
       if overwrite || !to.has_module(&dep_id) {
         if let Some(dep) = from.module(&dep_id) {
           if !copy_dependency(from, to, dep, overwrite)? {
+            // println!("skipped dep {:?}", dep.id);
             return Ok(false);
           }
         } else {
@@ -596,19 +589,23 @@ impl FarmPluginRecooler {
       Compiler::new_without_internal_plugins(config, context.plugin_driver.plugins.clone())?;
 
     // copy module graph to new compiler
-    copy_completed_modules(
-      &context.module_graph.read(),
-      &mut *compiler.context().module_graph.write(),
-      true,
-    )?;
+    if self.reuse_modules {
+      copy_completed_modules(
+        &context.module_graph.read(),
+        &mut *compiler.context().module_graph.write(),
+        true,
+      )?;
+    }
 
     let module_graph = compiler.trace_module_graph()?;
 
-    copy_completed_modules(
-      &compiler.context().module_graph.read(),
-      &mut *context.module_graph.write(),
-      false,
-    )?;
+    if self.reuse_modules {
+      copy_completed_modules(
+        &compiler.context().module_graph.read(),
+        &mut *context.module_graph.write(),
+        false,
+      )?;
+    }
 
     // {
     //   let mg_in = compiler.context().module_graph.read();
