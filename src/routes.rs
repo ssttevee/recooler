@@ -1,4 +1,5 @@
 use std::{
+  borrow::Borrow,
   cell::RefCell,
   collections::{HashMap, HashSet, VecDeque},
   path::{Path, PathBuf},
@@ -7,9 +8,13 @@ use std::{
 
 use farmfe_compiler::Compiler;
 use farmfe_core::{
+  config::persistent_cache::PersistentCacheConfig,
   context::CompilationContext,
   error::{CompilationError, Result},
-  module::{Module, ModuleId, ModuleMetaData},
+  module::{
+    module_graph::{ModuleGraph, ModuleGraphEdge},
+    Module, ModuleId, ModuleMetaData,
+  },
   parking_lot::{MappedRwLockReadGuard, RwLockReadGuard},
   regex::Regex,
   relative_path::PathExt,
@@ -240,8 +245,8 @@ impl FarmPluginRecooler {
 
             for action_id in page.handlers.action_handlers.get(method).unwrap() {
               if let Some(export) = {
-                let lock = self.ids.lock().unwrap();
-                let ids = lock.borrow();
+                let mut lock = self.ids.lock().unwrap();
+                let ids = lock.get_mut();
                 ids.form_action_ids.id_export(action_id)
               } {
                 actions += format!(
@@ -447,7 +452,7 @@ impl ScanResult {
         let mut handlers = ids_mutex
           .lock()
           .unwrap()
-          .borrow()
+          .get_mut()
           .handler_ids_for_modules(modules.iter().map(|m| &m.id));
 
         let layouts = self.layouts.get_layouts_for_path(&path);
@@ -522,6 +527,50 @@ impl ScanResult {
   }
 }
 
+fn copy_dependency(
+  from: &ModuleGraph,
+  to: &mut ModuleGraph,
+  module: &Module,
+  overwrite: bool,
+) -> Result<bool> {
+  if overwrite || !to.has_module(&module.id) {
+    let mut deps = Vec::<(ModuleId, &ModuleGraphEdge)>::new();
+    for (dep_id, edge) in from.dependencies(&module.id) {
+      if overwrite || !to.has_module(&dep_id) {
+        if let Some(dep) = from.module(&dep_id) {
+          if !copy_dependency(from, to, dep, overwrite)? {
+            return Ok(false);
+          }
+        } else {
+          // just ignore this
+          return Ok(false);
+        }
+
+        deps.push((dep_id, edge));
+      }
+    }
+
+    to.add_module(module.clone());
+    for (dep, edge) in deps {
+      to.add_edge(&module.id, &dep, edge.clone())?;
+    }
+  }
+
+  Ok(true)
+}
+
+fn copy_completed_modules(from: &ModuleGraph, to: &mut ModuleGraph, overwrite: bool) -> Result<()> {
+  for module in from.modules() {
+    if module.size == 0 {
+      continue;
+    }
+
+    copy_dependency(from, to, module, overwrite)?;
+  }
+
+  Ok(())
+}
+
 impl FarmPluginRecooler {
   fn get_module_dependencies<P: AsRef<Path>>(
     &self,
@@ -541,23 +590,25 @@ impl FarmPluginRecooler {
     config.progress = false;
     config.input = HashMap::new();
     config.input.insert(String::from("child"), source.clone());
+    config.persistent_cache = Box::new(PersistentCacheConfig::Bool(false));
 
     let compiler =
       Compiler::new_without_internal_plugins(config, context.plugin_driver.plugins.clone())?;
 
     // copy module graph to new compiler
-    // context
-    //   .module_graph
-    //   .read()
-    //   .copy_to(&mut *compiler.context().module_graph.write(), true)?;
+    copy_completed_modules(
+      &context.module_graph.read(),
+      &mut *compiler.context().module_graph.write(),
+      true,
+    )?;
 
     let module_graph = compiler.trace_module_graph()?;
 
-    // compiler
-    //   .context()
-    //   .module_graph
-    //   .read()
-    //   .copy_to(&mut *context.module_graph.write(), false)?;
+    copy_completed_modules(
+      &compiler.context().module_graph.read(),
+      &mut *context.module_graph.write(),
+      false,
+    )?;
 
     // {
     //   let mg_in = compiler.context().module_graph.read();
@@ -797,9 +848,9 @@ impl FarmPluginRecooler {
         head: find_head_export_type(root_deps[0].meta.as_script()),
         module_id: root_module_id,
         handlers: {
-          let ids_lock = self.ids.lock().unwrap();
+          let mut ids_lock = self.ids.lock().unwrap();
           let handlers = ids_lock
-            .borrow()
+            .get_mut()
             .handler_ids_for_modules(root_deps.iter().map(|m| &m.id));
           handlers
         },
