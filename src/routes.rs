@@ -1,12 +1,11 @@
 use std::{
-  borrow::Borrow,
   cell::RefCell,
   collections::{HashMap, HashSet, VecDeque},
   path::{Path, PathBuf},
   sync::{Arc, Mutex},
 };
 
-use farmfe_compiler::Compiler;
+use farmfe_compiler::{trace_module_graph::TracedModuleGraph, Compiler};
 use farmfe_core::{
   config::persistent_cache::PersistentCacheConfig,
   context::CompilationContext,
@@ -407,7 +406,7 @@ impl ScanResult {
     &mut self,
     path: String,
     ids_mutex: &Mutex<RefCell<GlobalIds>>,
-    modules: Vec<Module>,
+    modules: &Vec<Module>,
   ) -> Result<()> {
     let main_module = &modules[0];
 
@@ -504,13 +503,13 @@ impl ScanResult {
     &mut self,
     path: String,
     ids_mutex: &Mutex<RefCell<GlobalIds>>,
-    modules: Vec<Module>,
+    modules: &Vec<Module>,
   ) -> Result<()> {
     self.layouts.add_layout(path, ids_mutex, modules)
   }
 
   fn add_middleware(&mut self, path: String, module_id: &ModuleId) {
-    println!("adding middleware {}", module_id.relative_path());
+    // println!("adding middleware {}", module_id.relative_path());
     self
       .middlewares
       .entry(path)
@@ -528,7 +527,7 @@ fn copy_dependency(
   if overwrite || !to.has_module(&module.id) {
     let mut deps = Vec::<(ModuleId, &ModuleGraphEdge)>::new();
     for (dep_id, edge) in from.dependencies(&module.id) {
-      if overwrite || !to.has_module(&dep_id) {
+      if !to.has_module(&dep_id) {
         if let Some(dep) = from.module(&dep_id) {
           if !copy_dependency(from, to, dep, overwrite)? {
             // println!("skipped dep {:?}", dep.id);
@@ -565,71 +564,16 @@ fn copy_completed_modules(from: &ModuleGraph, to: &mut ModuleGraph, overwrite: b
 }
 
 impl FarmPluginRecooler {
-  fn get_module_dependencies<P: AsRef<Path>>(
+  fn list_dependencies_for_module(
     &self,
-    source_path: P,
-    context: &Arc<CompilationContext>,
-  ) -> Result<Vec<Module>> {
-    let source = if let Ok(canonical) = source_path.as_ref().canonicalize() {
-      canonical.to_str().unwrap().to_string()
-    } else {
-      return Err(CompilationError::GenericError(format!(
-        "failed to find source: {}",
-        source_path.as_ref().to_str().unwrap().to_string()
-      )));
-    };
-
-    let mut config = context.config.as_ref().clone();
-    config.progress = false;
-    config.input = HashMap::new();
-    config.input.insert(String::from("child"), source.clone());
-    config.persistent_cache = Box::new(PersistentCacheConfig::Bool(false));
-
-    let compiler =
-      Compiler::new_without_internal_plugins(config, context.plugin_driver.plugins.clone())?;
-
-    // copy module graph to new compiler
-    if self.reuse_modules {
-      copy_completed_modules(
-        &context.module_graph.read(),
-        &mut *compiler.context().module_graph.write(),
-        true,
-      )?;
-    }
-
-    let module_graph = compiler.trace_module_graph()?;
-
-    if self.reuse_modules {
-      copy_completed_modules(
-        &compiler.context().module_graph.read(),
-        &mut *context.module_graph.write(),
-        false,
-      )?;
-    }
-
-    // {
-    //   let mg_in = compiler.context().module_graph.read();
-    //   let mut mg_out = context.module_graph.write();
-
-    //   let mut new_modules = Vec::<ModuleId>::new();
-    //   for module in mg_in.modules() {
-    //     if !mg_out.has_module(&module.id) && module.id.relative_path().starts_with(&self.src_dir) {
-    //       mg_out.add_module(module.clone());
-    //       new_modules.push(module.id.clone());
-    //     }
-    //   }
-
-    //   for module_id in &new_modules {
-    //     for (dep, edge) in mg_in.dependencies(&module_id) {
-    //       mg_out.add_edge(&module_id, &dep, edge.clone())?;
-    //     }
-    //   }
-    // }
-
+    traced_graph: &TracedModuleGraph,
+    module_graph: &ModuleGraph,
+    source: &String,
+  ) -> Vec<Module> {
     let mut modules_queue = VecDeque::<String>::new();
     modules_queue.push_back(
-      PathBuf::from(&source)
-        .relative_to(module_graph.root)
+      PathBuf::from(source)
+        .relative_to(&traced_graph.root)
         .unwrap()
         .to_string(),
     );
@@ -648,15 +592,14 @@ impl FarmPluginRecooler {
 
       visited.insert(module_id.clone());
 
-      if let Some(deps) = module_graph.edges.get(&module_id) {
+      if let Some(deps) = traced_graph.edges.get(&module_id) {
         modules_queue.extend(deps.iter().cloned());
       }
 
       let module_id = ModuleId::from(module_id);
 
       // TODO: ensure module form actions and event handlers are properly registered
-      let graph = compiler.context().module_graph.read();
-      let module = graph.module(&module_id).unwrap();
+      let module = module_graph.module(&module_id).unwrap();
       // println!("module decls {}", module.meta.as_script().ast.body.len());
       if let ModuleMetaData::Script(script) = module.meta.as_ref() {
         let mut ids = self.ids.lock().unwrap();
@@ -666,7 +609,75 @@ impl FarmPluginRecooler {
       }
     }
 
-    Ok(deps)
+    deps
+  }
+
+  fn get_modules_dependencies(
+    &self,
+    source_paths: Vec<PathBuf>,
+    context: &Arc<CompilationContext>,
+  ) -> Result<HashMap<PathBuf, Vec<Module>>> {
+    let mut config = context.config.as_ref().clone();
+    config.progress = false;
+    config.input = HashMap::from_iter(
+      source_paths
+        .iter()
+        .map(|sp| {
+          let s = sp.to_str().unwrap().to_string();
+          if let Ok(canonical) = sp.canonicalize() {
+            Ok(vec![(s, canonical.to_str().unwrap().to_string())])
+          } else {
+            Err(CompilationError::GenericError(format!(
+              "failed to find source: {}",
+              s
+            )))
+          }
+        })
+        .reduce(|a, b| Ok(a?.into_iter().chain(b?.into_iter()).collect()))
+        .unwrap()?
+        .into_iter(),
+    );
+    config.persistent_cache = Box::new(PersistentCacheConfig::Bool(false));
+    let canonical_path_map = config.input.clone();
+
+    let compiler =
+      Compiler::new_without_internal_plugins(config, context.plugin_driver.plugins.clone())?;
+
+    // copy module graph to new compiler
+    // if self.reuse_modules {
+    //   let mut module_graph = compiler.context().module_graph.write();
+    //   copy_completed_modules(&context.module_graph.read(), &mut *module_graph, true)?;
+
+    //   module_graph.update_execution_order_for_modules();
+    // }
+
+    let traced_module = compiler.trace_module_graph()?;
+
+    if self.reuse_modules {
+      let mut module_graph = context.module_graph.write();
+      copy_completed_modules(
+        &compiler.context().module_graph.read(),
+        &mut *module_graph,
+        false,
+      )?;
+
+      module_graph.update_execution_order_for_modules();
+    }
+
+    let module_graph_rg = compiler.context().module_graph.read();
+    let module_graph = &*module_graph_rg;
+
+    Ok(HashMap::from_iter(source_paths.into_iter().map(|sp| {
+      let s = sp.to_str().unwrap().to_string();
+      (
+        sp.clone(),
+        self.list_dependencies_for_module(
+          &traced_module,
+          module_graph,
+          canonical_path_map.get(&s).unwrap(),
+        ),
+      )
+    })))
   }
 }
 
@@ -813,11 +824,23 @@ impl FarmPluginRecooler {
     let dir_contents = self.scan_dir()?;
 
     let mut result = ScanResult::new();
+    let deps_map = self.get_modules_dependencies(
+      dir_contents
+        .layout_files
+        .iter()
+        .chain(dir_contents.route_files.iter())
+        .chain(dir_contents.root_file.iter())
+        .cloned()
+        .collect(),
+      context,
+    )?;
+
     for layout_file in &dir_contents.layout_files {
       result.add_layout(
         file_to_route_path(&self.routes_dir, layout_file),
         &self.ids,
-        self.get_module_dependencies(layout_file, context)?,
+        // &self.get_module_dependencies(layout_file, context)?,
+        deps_map.get(layout_file).unwrap(),
       )?;
     }
 
@@ -832,13 +855,15 @@ impl FarmPluginRecooler {
       result.add_route(
         file_to_route_path(&self.routes_dir, route_file),
         &self.ids,
-        self.get_module_dependencies(route_file, context)?,
+        // &self.get_module_dependencies(route_file, context)?,
+        deps_map.get(route_file).unwrap(),
       )?;
     }
 
     let root_file = PathBuf::from(&self.src_dir).join("root.tsx");
     if let Some(root_file) = &dir_contents.root_file {
-      let root_deps = self.get_module_dependencies(&root_file, context)?;
+      // let root_deps = self.get_module_dependencies(&root_file, context)?;
+      let root_deps = deps_map.get(root_file).unwrap();
       let root_module_id = root_deps[0].id.clone();
 
       result.root_component = Some(RootComponentInfo {
@@ -854,7 +879,7 @@ impl FarmPluginRecooler {
       });
     } else {
       println!(
-        "WARNING: could not find page root module (expected at {})",
+        "WARNING: could not find page root module, using default root component (expected at {})",
         serde_json::to_string(&root_file.to_str().unwrap()).unwrap()
       );
     };

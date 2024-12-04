@@ -91,7 +91,7 @@ impl LayoutTree {
     &mut self,
     path: String,
     ids_mutex: &Mutex<RefCell<GlobalIds>>,
-    modules: Vec<Module>,
+    modules: &Vec<Module>,
   ) -> Result<()> {
     let main_module = &modules[0];
 
@@ -108,7 +108,7 @@ impl LayoutTree {
       let exports = find_exports(&main_module.id, script);
       assert!(node.module.is_none());
       let head = find_head_export_type(script);
-      println!("inserting layout: {} {:?}", path, head);
+      // println!("inserting layout: {} {:?}", path, head);
       node.module = Some(LayoutInfo {
         module_id: main_module.id.clone(),
         layout_handlers: if exports.contains("default") {
