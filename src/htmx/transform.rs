@@ -346,11 +346,11 @@ impl<'a> ComponentTransformVisitor<'a> {
       .global_ids
       .event_handler_ids
       .generate_id(self.module_id, &export_name);
-    println!(
-      "added event ids: {} {}",
-      &event_handler_id,
-      self.module_id.relative_path()
-    );
+    // println!(
+    //   "added event ids: {} {}",
+    //   &event_handler_id,
+    //   self.module_id.relative_path()
+    // );
 
     // TODO: capture scope variables
 

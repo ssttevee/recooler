@@ -240,22 +240,31 @@ impl FarmPluginRecooler {
 
           let mut root_methods_copy = root_action_methods.clone();
           for method in methods {
-            let mut actions = String::new();
-
-            for action_id in page.handlers.action_handlers.get(method).unwrap() {
-              if let Some(export) = {
-                let mut lock = self.ids.lock().unwrap();
-                let ids = lock.get_mut();
-                ids.form_action_ids.id_export(action_id)
-              } {
-                actions += format!(
-                  "{}: {}, ",
-                  serde_json::to_string(action_id).unwrap(),
-                  import_idents.identifier(&export.module_id, export.export_name),
-                )
-                .as_str();
-              }
-            }
+            let actions = page
+              .handlers
+              .action_handlers
+              .get(method)
+              .unwrap()
+              .iter()
+              .flat_map(|action_id| {
+                if let Some(export) = {
+                  let mut lock = self.ids.lock().unwrap();
+                  let ids = lock.get_mut();
+                  ids.form_action_ids.id_export(action_id)
+                } {
+                  vec![format!(
+                    "{}: {}",
+                    serde_json::to_string(action_id).unwrap(),
+                    import_idents.identifier(&export.module_id, export.export_name),
+                  )]
+                } else {
+                  vec![]
+                }
+              })
+              .collect::<HashSet<_>>()
+              .into_iter()
+              .collect::<Vec<_>>()
+              .join(", ");
 
             let mut route_params = pathjs.clone();
             if root_methods_copy.contains(method) {

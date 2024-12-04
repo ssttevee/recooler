@@ -95,7 +95,7 @@ impl GlobalIds {
     &self,
     modules: I,
   ) -> ComponentHandlerIds {
-    let mut action_handlers = HashMap::<FormActionMethod, Vec<String>>::new();
+    let mut action_handlers = HashMap::<FormActionMethod, HashSet<String>>::new();
     let mut event_handlers = HashSet::<String>::new();
 
     let modules = modules.cloned().collect::<Vec<_>>();
@@ -105,7 +105,7 @@ impl GlobalIds {
           action_handlers.insert(*method, Default::default());
         }
 
-        action_handlers.get_mut(method).unwrap().push(action_id);
+        action_handlers.get_mut(method).unwrap().insert(action_id);
       }
     }
 
@@ -123,7 +123,7 @@ impl GlobalIds {
 #[derive(Clone)]
 pub(crate) struct ComponentHandlerIds {
   /// Array of action ids for each form action method
-  pub(crate) action_handlers: HashMap<FormActionMethod, Vec<String>>,
+  pub(crate) action_handlers: HashMap<FormActionMethod, HashSet<String>>,
 
   /// Array of event ids that is used by a particular route and its dependencies
   pub(crate) event_handlers: HashSet<String>,
