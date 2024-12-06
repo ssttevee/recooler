@@ -140,27 +140,32 @@ impl<'a> ComponentTransformVisitor<'a> {
     let mut replacement = Box::new(Expr::Tpl(Tpl {
       quasis: vec![
         TplElement {
-          raw: format!(
+          raw: self.atom_store.atom(format!(
             "{}?action={}&scope=",
             self.route_pathname,
             urlencoding::encode(form_action_id.as_str())
-          )
-          .into(),
+          )),
           ..Take::dummy()
         },
         TplElement {
-          raw: "".into(),
+          raw: self.atom_store.atom(""),
           ..Take::dummy()
         },
       ],
       exprs: vec![Box::new(Expr::Call(CallExpr {
-        callee: Callee::Expr(Box::new(Expr::Ident(Ident::from("encodeURIComponent")))),
+        callee: Callee::Expr(Box::new(Expr::Ident(Ident::new(
+          self.atom_store.atom("encodeURIComponent"),
+          Take::dummy(),
+        )))),
         args: vec![ExprOrSpread::from(Expr::Call(CallExpr {
           span: Default::default(),
           type_args: None,
           callee: Callee::Expr(Box::new(Expr::Member(MemberExpr {
-            obj: Box::new(Expr::Ident(Ident::from("JSON"))),
-            prop: MemberProp::Ident(Ident::from("stringify")),
+            obj: Box::new(Expr::Ident(Ident::new(
+              self.atom_store.atom("JSON"),
+              Take::dummy(),
+            ))),
+            prop: MemberProp::Ident(Ident::new(self.atom_store.atom("stringify"), Take::dummy())),
             ..Take::dummy()
           }))),
           args: vec![ExprOrSpread::from(Box::new(Expr::Object(ObjectLit {
@@ -194,7 +199,7 @@ impl<'a> ComponentTransformVisitor<'a> {
         init: Some(Box::new(Expr::Arrow(ArrowExpr {
           span: Default::default(),
           params: vec![Pat::Ident(BindingIdent {
-            id: Ident::new(Atom::from("_$$ctx"), Default::default()),
+            id: Ident::new(self.atom_store.atom("_$$ctx"), Default::default()),
             type_ann: None,
           })],
           body: Box::new({
@@ -203,7 +208,7 @@ impl<'a> ComponentTransformVisitor<'a> {
               callee: Callee::Expr(replacement),
               args: vec![
                 ExprOrSpread::from(Expr::Ident(Ident::new(
-                  Atom::from("_$$ctx"),
+                  self.atom_store.atom("_$$ctx"),
                   Default::default(),
                 ))),
                 // should be `Object.fromEntries(await ctx.req.formData())`
@@ -211,8 +216,14 @@ impl<'a> ComponentTransformVisitor<'a> {
                   span: Default::default(),
                   callee: Callee::Expr(Box::new(Expr::Member(MemberExpr {
                     span: Default::default(),
-                    obj: Box::new(Expr::Ident(Ident::from("Object"))),
-                    prop: MemberProp::Ident(Ident::from("fromEntries")),
+                    obj: Box::new(Expr::Ident(Ident::new(
+                      self.atom_store.atom("Object"),
+                      Take::dummy(),
+                    ))),
+                    prop: MemberProp::Ident(Ident::new(
+                      self.atom_store.atom("fromEntries"),
+                      Take::dummy(),
+                    )),
                   }))),
                   args: vec![ExprOrSpread {
                     spread: None,
@@ -224,10 +235,19 @@ impl<'a> ComponentTransformVisitor<'a> {
                           span: Default::default(),
                           obj: Box::new(Expr::Member(MemberExpr {
                             span: Default::default(),
-                            obj: Box::new(Expr::Ident(Ident::from("_$$ctx"))),
-                            prop: MemberProp::Ident(Ident::from("req")),
+                            obj: Box::new(Expr::Ident(Ident::new(
+                              self.atom_store.atom("_$$ctx"),
+                              Take::dummy(),
+                            ))),
+                            prop: MemberProp::Ident(Ident::new(
+                              self.atom_store.atom("req"),
+                              Take::dummy(),
+                            )),
                           })),
-                          prop: MemberProp::Ident(Ident::from("formData")),
+                          prop: MemberProp::Ident(Ident::new(
+                            self.atom_store.atom("formData"),
+                            Take::dummy(),
+                          )),
                         }))),
                         args: vec![],
                         type_args: None,
@@ -276,11 +296,11 @@ impl<'a> ComponentTransformVisitor<'a> {
                         callee: Callee::Expr(Box::new(Expr::Member(MemberExpr {
                           span: Default::default(),
                           obj: Box::new(Expr::Ident(Ident::new(
-                            Atom::from("JSON"),
+                            self.atom_store.atom("JSON"),
                             Default::default(),
                           ))),
                           prop: MemberProp::Ident(Ident::new(
-                            Atom::from("parse"),
+                            self.atom_store.atom("parse"),
                             Default::default(),
                           )),
                         }))),
@@ -294,16 +314,16 @@ impl<'a> ComponentTransformVisitor<'a> {
                               obj: Box::new(Expr::Member(MemberExpr {
                                 span: Default::default(),
                                 obj: Box::new(Expr::Ident(Ident::new(
-                                  Atom::from("_$$ctx"),
+                                  self.atom_store.atom("_$$ctx"),
                                   Default::default(),
                                 ))),
                                 prop: MemberProp::Ident(Ident::new(
-                                  Atom::from("req"),
+                                  self.atom_store.atom("req"),
                                   Default::default(),
                                 )),
                               })),
                               prop: MemberProp::Ident(Ident::new(
-                                Atom::from("query"),
+                                self.atom_store.atom("query"),
                                 Default::default(),
                               )),
                             }))),
