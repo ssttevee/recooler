@@ -489,7 +489,7 @@ impl<'a> VisitMut for ComponentTransformVisitor<'a> {
       })) = &mut node.value
       {
         let key = name.sym.as_str();
-        if key.starts_with("hx-on:") {
+        if key.starts_with("hx-on:") || key.starts_with("hx-on-") {
           self.add_event_handler(expr);
           return;
         }
@@ -521,7 +521,7 @@ impl<'a> VisitMut for ComponentTransformVisitor<'a> {
   fn visit_mut_key_value_prop(&mut self, node: &mut KeyValueProp) {
     if node.key.is_str() {
       let key = node.key.as_str().unwrap().value.as_str();
-      if key.starts_with("hx-on:") {
+      if key.starts_with("hx-on:") || key.starts_with("hx-on-") {
         self.add_event_handler(&mut node.value);
         return;
       }

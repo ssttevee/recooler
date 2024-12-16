@@ -175,7 +175,7 @@ impl<'a> Visit for ComponentHandlerValidationVisitor<'a> {
     }
 
     let key = node.key.as_str().unwrap().value.as_str();
-    if key.starts_with("hx-on:") {
+    if key.starts_with("hx-on:") || key.starts_with("hx-on-") {
       self.validate_event_handler(node);
       return;
     }
