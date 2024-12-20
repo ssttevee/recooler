@@ -52,12 +52,12 @@ declare interface EventHandlerFn<
 
 declare namespace JSX {
   interface HtmlGlobalAttributes {
-    [event: `hx-on:${string}`]: EventHandlerFn;
-    [`hx-get`]?: FormActionFn;
-    [`hx-post`]?: FormActionFn;
-    [`hx-patch`]?: FormActionFn;
-    [`hx-put`]?: FormActionFn;
-    [`hx-delete`]?: FormActionFn;
+    [event: `hx-on:${string}`]: EventHandlerFn | string;
+    "hx-get"?: FormActionFn | string;
+    "hx-post"?: FormActionFn | string;
+    "hx-patch"?: FormActionFn | string;
+    "hx-put"?: FormActionFn | string;
+    "hx-delete"?: FormActionFn | string;
   }
 }
 
