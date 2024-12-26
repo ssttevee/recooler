@@ -608,13 +608,19 @@ impl FarmPluginRecooler {
       let module_id = ModuleId::from(module_id);
 
       // TODO: ensure module form actions and event handlers are properly registered
-      let module = module_graph.module(&module_id).unwrap();
-      // println!("module decls {}", module.meta.as_script().ast.body.len());
-      if let ModuleMetaData::Script(script) = module.meta.as_ref() {
-        let mut ids = self.ids.lock().unwrap();
-        crate::htmx::validate::ensure_registered_handlers(&module_id, ids.get_mut(), &script.ast);
+      if let Some(module) = module_graph.module(&module_id) {
+        // println!("module decls {}", module.meta.as_script().ast.body.len());
+        if let ModuleMetaData::Script(script) = module.meta.as_ref() {
+          let mut ids = self.ids.lock().unwrap();
+          crate::htmx::validate::ensure_registered_handlers(&module_id, ids.get_mut(), &script.ast);
 
-        deps.push(module.clone());
+          deps.push(module.clone());
+        }
+      } else {
+        println!(
+          "WARNING: module not found in module graph: {}",
+          module_id.relative_path()
+        );
       }
     }
 
