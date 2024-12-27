@@ -97,12 +97,14 @@ impl LayoutTree {
 
     if let ModuleMetaData::Script(script) = main_module.meta.as_ref() {
       let mut node = self;
-      for segment in path[1..].split("/") {
-        if !node.children.contains_key(segment) {
-          node.children.insert(segment.to_string(), LayoutTree::new());
-        }
+      if path.len() > 1 {
+        for segment in path[1..].split("/") {
+          if !node.children.contains_key(segment) {
+            node.children.insert(segment.to_string(), LayoutTree::new());
+          }
 
-        node = node.children.get_mut(segment).unwrap();
+          node = node.children.get_mut(segment).unwrap();
+        }
       }
 
       let exports = find_exports(&main_module.id, script);
