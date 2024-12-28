@@ -19,7 +19,7 @@ use farmfe_compiler::Compiler;
 use farmfe_core::{
   config::{bool_or_obj::BoolOrObj, Config, SourcemapConfig},
   context::CompilationContext,
-  error::Result,
+  error::{CompilationError, Result},
   module::{ModuleId, ModuleMetaData, ModuleType},
   plugin::*,
   regex::Regex,
@@ -158,30 +158,75 @@ impl Plugin for FarmPluginRecooler {
     hook_context: &PluginHookContext,
   ) -> Result<Option<PluginLoadHookResult>> {
     if param.module_id == ENTRYPOINT_MODULE {
-      return Ok(Some(PluginLoadHookResult {
-        content: self.generate_entrypoint_module(context, hook_context)?,
-        module_type: ModuleType::Js,
-        source_map: None,
-      }));
+      match self.generate_entrypoint_module(context, hook_context) {
+        Ok(content) => {
+          return Ok(Some(PluginLoadHookResult {
+            content,
+            module_type: ModuleType::Js,
+            source_map: None,
+          }))
+        }
+        Err(e) => {
+          match &e {
+            CompilationError::GenericError(msg) => match serde_json::from_str::<Vec<String>>(msg) {
+              Ok(msg) => {
+                print!("{}", msg[0]);
+              }
+              Err(_) => match serde_json::from_str::<String>(msg) {
+                Ok(msg) => {
+                  print!("{}", msg);
+                }
+                Err(_) => {
+                  print!("{}", msg);
+                }
+              },
+            },
+            _ => print!("qwer {}", e),
+          }
+          return Err(CompilationError::GenericError(
+            "failed to generate entrypoint module".to_string(),
+          ));
+        }
+      }
     }
 
     if param.module_id == METADATA_MODULE {
-      return Ok(Some(PluginLoadHookResult {
-        content: self.generate_metadata_module()?,
-        module_type: ModuleType::Js,
-        source_map: None,
-      }));
+      match self.generate_metadata_module() {
+        Ok(content) => {
+          return Ok(Some(PluginLoadHookResult {
+            content,
+            module_type: ModuleType::Js,
+            source_map: None,
+          }))
+        }
+        Err(e) => {
+          println!("{}", e);
+          return Err(CompilationError::GenericError(
+            "failed to generate metadata module".to_string(),
+          ));
+        }
+      }
     }
 
     if param.module_id.starts_with(CLIENT_MODULE_PREFIX) {
-      return Ok(Some(PluginLoadHookResult {
-        content: self.generate_client_entrypoint(
-          context,
-          &param.module_id[CLIENT_MODULE_PREFIX.len()..].to_string(),
-        )?,
-        module_type: ModuleType::Js,
-        source_map: None,
-      }));
+      match self.generate_client_entrypoint(
+        context,
+        &param.module_id[CLIENT_MODULE_PREFIX.len()..].to_string(),
+      ) {
+        Ok(content) => {
+          return Ok(Some(PluginLoadHookResult {
+            content,
+            module_type: ModuleType::Js,
+            source_map: None,
+          }))
+        }
+        Err(e) => {
+          println!("{}", e);
+          return Err(CompilationError::GenericError(
+            "failed to generate client module".to_string(),
+          ));
+        }
+      }
     }
 
     Ok(None)
