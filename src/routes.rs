@@ -714,23 +714,25 @@ pub(crate) fn file_to_route_path<P: AsRef<Path>>(route_dir: P, file_path: &Path)
   let mut relpath = file_path.relative_to(route_dir).unwrap();
   relpath.pop();
 
-  format!(
-    "/{}",
-    relpath
-      .iter()
-      .map(|p| {
-        PATH_COMPONENT_ROUTE_PARAM_PATTERN
-          .replace(p, ":$1")
-          .to_string()
-      })
-      .map(|p| {
-        PATH_COMPONENT_ROUTE_WILDCARD_PATTERN
-          .replace(p.as_str(), ":$1{.+}")
-          .to_string()
-      })
-      .collect::<Vec<String>>()
-      .join("/")
-  )
+  let path = relpath
+    .iter()
+    .map(|p| {
+      PATH_COMPONENT_ROUTE_PARAM_PATTERN
+        .replace(p, ":$1")
+        .to_string()
+    })
+    .map(|p| {
+      PATH_COMPONENT_ROUTE_WILDCARD_PATTERN
+        .replace(p.as_str(), ":$1{.+}")
+        .to_string()
+    })
+    .collect::<Vec<String>>()
+    .join("/");
+  if path.starts_with(".") {
+    return String::new();
+  }
+
+  format!("/{}", path)
 }
 
 lazy_static! {
