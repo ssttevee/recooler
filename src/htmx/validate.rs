@@ -6,6 +6,8 @@ use farmfe_toolkit::{
   swc_ecma_visit::{Visit, VisitWith},
 };
 
+use crate::es_ast_helpers::is_fn;
+
 use super::{FormActionMethod, LocalHandlerIdentGenerator, ACTION_DECL_PREFIX, EVENT_DECL_PREFIX};
 
 lazy_static! {
@@ -180,7 +182,7 @@ impl<'a> Visit for ComponentHandlerValidationVisitor<'a> {
       return;
     }
 
-    if key.starts_with("hx-") {
+    if key.starts_with("hx-") && is_fn(&*node.value) {
       macro_rules! form_action {
         ($method:ident) => {
           if &key[3..]

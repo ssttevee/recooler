@@ -6,6 +6,8 @@ use farmfe_toolkit::{
   swc_ecma_visit::{Visit, VisitMut, VisitMutWith, VisitWith},
 };
 
+use crate::es_ast_helpers::is_fn;
+
 use super::{FormActionMethod, LocalHandlerIdentGenerator};
 
 pub(crate) fn transform_module(
@@ -113,7 +115,7 @@ impl<'a> ComponentTransformVisitor<'a> {
   }
 
   fn add_action(&mut self, method: FormActionMethod, value_node: &mut Box<Expr>) {
-    // println!("called add_action");
+    println!("called add_action");
     let export_name = self.idents.next_action_ident(method);
     let form_action_id = self
       .global_ids
@@ -123,12 +125,12 @@ impl<'a> ComponentTransformVisitor<'a> {
     if let Some(existing_method) = self.global_ids.action_method_map.get(&form_action_id) {
       std::assert!(*existing_method == method);
     } else {
-      // println!(
-      //   "adding into action_method_map: {} {:?} {}",
-      //   &form_action_id,
-      //   method,
-      //   self.module_id.relative_path()
-      // );
+      println!(
+        "adding into action_method_map: {} {:?} {}",
+        &form_action_id,
+        method,
+        self.module_id.relative_path()
+      );
 
       self
         .global_ids
@@ -494,7 +496,7 @@ impl<'a> VisitMut for ComponentTransformVisitor<'a> {
           return;
         }
 
-        if key.starts_with("hx-") {
+        if key.starts_with("hx-") && is_fn(expr) {
           macro_rules! form_action {
             ($method:ident) => {
               if &key[3..]
@@ -526,7 +528,7 @@ impl<'a> VisitMut for ComponentTransformVisitor<'a> {
         return;
       }
 
-      if key.starts_with("hx-") {
+      if key.starts_with("hx-") && is_fn(&*node.value) {
         macro_rules! form_action {
           ($method:ident) => {
             if &key[3..]

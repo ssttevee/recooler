@@ -2,8 +2,11 @@ use std::collections::HashSet;
 
 use farmfe_core::{
   module::{ModuleId, ScriptModuleMetaData},
-  swc_ecma_ast::{Decl, ExportSpecifier, ModuleDecl, ModuleExportName, ModuleItem, Pat},
+  swc_ecma_ast::{
+    ArrowExpr, Decl, ExportSpecifier, Expr, FnExpr, ModuleDecl, ModuleExportName, ModuleItem, Pat,
+  },
 };
+use farmfe_toolkit::swc_ecma_codegen::to_code;
 
 use crate::head::HeadType;
 
@@ -120,4 +123,25 @@ pub(crate) fn find_head_export_type(script: &ScriptModuleMetaData) -> Option<Hea
   // TODO: support other head export types
 
   None
+}
+
+pub fn is_fn(expr: &Expr) -> bool {
+  println!("is_fn {}", to_code(expr));
+  if let Expr::Fn(FnExpr { function, .. }) = expr {
+    if let Some(_) = &function.body {
+      // if let Some(Stmt::Expr(Expr::Lit(Lit::Str(str)))) = body.stmts.first() {
+      //   return str == "use action";
+      // }
+      println!("is_fn yes");
+      return true;
+    }
+  }
+
+  if let Expr::Arrow(ArrowExpr { .. }) = expr {
+    println!("is_fn yes");
+    return true;
+  }
+
+  println!("is_fn no");
+  false
 }
