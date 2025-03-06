@@ -115,7 +115,6 @@ impl<'a> ComponentTransformVisitor<'a> {
   }
 
   fn add_action(&mut self, method: FormActionMethod, value_node: &mut Box<Expr>) {
-    println!("called add_action");
     let export_name = self.idents.next_action_ident(method);
     let form_action_id = self
       .global_ids

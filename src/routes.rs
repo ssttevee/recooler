@@ -149,6 +149,15 @@ impl FarmPluginRecooler {
         std::cmp::Ordering::Greater
       } else if !a.0.ends_with("{.+}") && b.0.ends_with("{.+}") {
         std::cmp::Ordering::Less
+      } else if a.0.ends_with("{.+}") && b.0.ends_with("{.+}") {
+        // split the path into segments and sort by descending segment count before sorting lexically
+        let order =
+          std::cmp::Reverse(a.0.split("/").count()).cmp(&std::cmp::Reverse(b.0.split("/").count()));
+        if order == std::cmp::Ordering::Equal {
+          a.0.cmp(&b.0)
+        } else {
+          order
+        }
       } else {
         a.0.cmp(&b.0)
       }
