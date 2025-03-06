@@ -77,12 +77,12 @@ impl<'a> ComponentHandlerValidationVisitor<'a> {
     if let Some(existing_method) = self.global_ids.action_method_map.get(&form_action_id) {
       std::assert!(*existing_method == method);
     } else {
-      println!(
-        "adding into action_method_map: {} {:?} {}",
-        &form_action_id,
-        method,
-        self.module_id.relative_path()
-      );
+      // println!(
+      //   "adding into action_method_map: {} {:?} {}",
+      //   &form_action_id,
+      //   method,
+      //   self.module_id.relative_path()
+      // );
 
       self
         .global_ids
