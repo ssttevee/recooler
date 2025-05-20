@@ -5,10 +5,16 @@ use farmfe_toolkit::{
   swc_atoms::{Atom, AtomStore},
   swc_ecma_visit::{Visit, VisitMut, VisitMutWith, VisitWith},
 };
+use lazy_static::lazy_static;
+use regex::Regex;
 
 use crate::es_ast_helpers::is_fn;
 
 use super::{FormActionMethod, LocalHandlerIdentGenerator};
+
+lazy_static! {
+  static ref RE_PATH_PARAM: Regex = Regex::new(r"/:(\w+)(?:\{.+?\}|\?)?(?:/|$)").unwrap();
+}
 
 pub(crate) fn transform_module(
   module_id: &ModuleId,
@@ -19,7 +25,48 @@ pub(crate) fn transform_module(
 ) {
   let mut visitor = ComponentTransformVisitor {
     module_id,
-    route_pathname,
+    route_pathname: {
+      // parse the pathname for parameters
+      let mut pos: usize = 0;
+      let mut parts: Vec<String> = vec![];
+      let mut params: Vec<Atom> = vec![];
+      while pos < route_pathname.len() {
+        if let Some(capture) = RE_PATH_PARAM.captures_at(route_pathname.as_str(), pos) {
+          let c = capture.get(1).unwrap();
+          parts.push(
+            route_pathname[pos
+              ..c.start()
+              // subtract one to account for the colon
+              - 1]
+              .to_string(),
+          );
+          params.push(atom_store.atom(c.as_str()));
+
+          let m = capture.get(0).unwrap();
+          pos = m.end();
+          if m.as_str().chars().last().unwrap() == '/' {
+            // subtract one so the next param can match with the slash
+            pos -= 1;
+          }
+
+          continue;
+        }
+
+        break;
+      }
+
+      if pos == 0 {
+        RoutePathname::Fixed(route_pathname)
+      } else {
+        parts.push(route_pathname[pos..].to_string());
+
+        RoutePathname::Parameterized(ParameterizedRoutePathname {
+          parts: parts,
+          params: params,
+          replacement_state: None,
+        })
+      }
+    },
     atom_store,
     global_ids,
     idents: Default::default(),
@@ -39,9 +86,78 @@ pub(crate) fn transform_module(
   }
 }
 
+#[derive(Default)]
+struct ParameterizedRoutePathnameReplacementState {
+  used_idents: HashSet<Atom>,
+  prop_refs: Vec<*mut Ident>,
+}
+
+impl ParameterizedRoutePathnameReplacementState {
+  fn replace_placeholder_prop_references(
+    &mut self,
+    atom_store: &mut &mut AtomStore,
+    param_pat: &mut Pat,
+    body: &mut BlockStmt,
+  ) {
+    let sym = if let Some(ident) = param_pat.as_ident() {
+      ident.id.sym.clone()
+    } else {
+      // replace destructured param with an ident so it can be directly referenced
+      let ident_prefix = "prop";
+      let mut next_ident_number: u32 = 0;
+      let mut atom = (*atom_store).atom(ident_prefix);
+      while self.used_idents.contains(&atom) {
+        atom = (*atom_store).atom(format!("{}_{}", ident_prefix, next_ident_number));
+        next_ident_number += 1;
+      }
+
+      body.stmts.insert(
+        0,
+        Stmt::Decl(Decl::Var(Box::new(VarDecl {
+          kind: VarDeclKind::Let,
+          decls: vec![VarDeclarator {
+            name: param_pat.clone(),
+            init: Some(Box::new(Expr::Ident(Ident::new(
+              atom.clone(),
+              Take::dummy(),
+            )))),
+            ..Take::dummy()
+          }],
+          ..Take::dummy()
+        }))),
+      );
+
+      atom
+    };
+
+    for ptr in &self.prop_refs {
+      *unsafe { &mut **ptr } = Ident::new(sym.clone(), Take::dummy());
+    }
+
+    *param_pat = Pat::Ident(BindingIdent {
+      id: Ident {
+        sym: sym,
+        ..Take::dummy()
+      },
+      ..Take::dummy()
+    });
+  }
+}
+
+struct ParameterizedRoutePathname {
+  parts: Vec<String>,
+  params: Vec<Atom>,
+  replacement_state: Option<*mut ParameterizedRoutePathnameReplacementState>,
+}
+
+enum RoutePathname {
+  Fixed(String),
+  Parameterized(ParameterizedRoutePathname),
+}
+
 struct ComponentTransformVisitor<'a> {
   module_id: &'a ModuleId,
-  route_pathname: String,
+  route_pathname: RoutePathname,
   atom_store: &'a mut AtomStore,
   global_ids: &'a mut crate::GlobalIds,
 
@@ -53,6 +169,20 @@ struct ComponentTransformVisitor<'a> {
 }
 
 impl<'a> ComponentTransformVisitor<'a> {
+  fn get_all_variables_in_scope(&self) -> Vec<Atom> {
+    if let Some(scopes) = self.scopes.clone() {
+      return scopes
+        .iter()
+        .fold(HashSet::<Atom>::default(), |vars, scope| {
+          vars.union(scope.as_ref()).cloned().collect()
+        })
+        .into_iter()
+        .collect::<_>();
+    }
+
+    vec![]
+  }
+
   fn get_captured_variables(&self, expr: &Expr) -> Vec<Atom> {
     // println!("get captured variables scopes: {:?}", self.scopes);
     if let Some(scopes) = self.scopes.clone() {
@@ -138,21 +268,11 @@ impl<'a> ComponentTransformVisitor<'a> {
     }
 
     let captured_vars = self.get_captured_variables(value_node);
-    let mut replacement = Box::new(Expr::Tpl(Tpl {
-      quasis: vec![
-        TplElement {
-          raw: self.atom_store.atom(format!(
-            "{}?action={}&scope=",
-            self.route_pathname,
-            urlencoding::encode(form_action_id.as_str())
-          )),
-          ..Take::dummy()
-        },
-        TplElement {
-          raw: self.atom_store.atom(""),
-          ..Take::dummy()
-        },
-      ],
+    let mut tpl = Tpl {
+      quasis: vec![TplElement {
+        raw: self.atom_store.atom(""),
+        ..Take::dummy()
+      }],
       exprs: vec![Box::new(Expr::Call(CallExpr {
         callee: Callee::Expr(Box::new(Expr::Ident(Ident::new(
           self.atom_store.atom("encodeURIComponent"),
@@ -186,7 +306,88 @@ impl<'a> ComponentTransformVisitor<'a> {
         type_args: None,
       }))],
       span: Default::default(),
-    }));
+    };
+
+    match &self.route_pathname {
+      RoutePathname::Fixed(str) => {
+        tpl.quasis.insert(
+          0,
+          TplElement {
+            raw: self.atom_store.atom(format!(
+              "{}?action={}&scope=",
+              str,
+              urlencoding::encode(form_action_id.as_str())
+            )),
+            ..Take::dummy()
+          },
+        );
+      }
+      RoutePathname::Parameterized(pathname) => {
+        tpl.quasis.insert(
+          0,
+          TplElement {
+            raw: self.atom_store.atom(format!(
+              "{}?action={}&scope=",
+              pathname.parts[pathname.parts.len() - 1],
+              urlencoding::encode(form_action_id.as_str())
+            )),
+            ..Take::dummy()
+          },
+        );
+
+        for i in 0..pathname.parts.len() - 1 {
+          tpl.quasis.insert(
+            0,
+            TplElement {
+              raw: self
+                .atom_store
+                .atom(&pathname.parts[pathname.parts.len() - 2 - i]),
+              ..Take::dummy()
+            },
+          );
+
+          let mut placeholder_ident = Box::new(Expr::Ident(Ident::new(
+            // this is a placeholder
+            self.atom_store.atom("placeholder"),
+            Take::dummy(),
+          )));
+          if let Some(state) = pathname.replacement_state.map(|p| unsafe { &mut *p }) {
+            state
+              .prop_refs
+              .push(&mut *placeholder_ident.as_mut_ident().unwrap());
+
+            state.used_idents.extend(self.get_all_variables_in_scope());
+          }
+
+          tpl.exprs.insert(
+            0,
+            Box::new(Expr::Call(CallExpr {
+              span: Default::default(),
+              type_args: None,
+              callee: Callee::Expr(Box::new(Expr::Member(MemberExpr {
+                obj: Box::new(Expr::Member(MemberExpr {
+                  obj: Box::new(Expr::Member(MemberExpr {
+                    obj: placeholder_ident,
+                    prop: MemberProp::Ident(Ident::new(self.atom_store.atom("ctx"), Take::dummy())),
+                    ..Take::dummy()
+                  })),
+                  prop: MemberProp::Ident(Ident::new(self.atom_store.atom("req"), Take::dummy())),
+                  ..Take::dummy()
+                })),
+                prop: MemberProp::Ident(Ident::new(self.atom_store.atom("param"), Take::dummy())),
+                ..Take::dummy()
+              }))),
+              args: vec![ExprOrSpread::from(Box::new(Expr::Lit(Lit::Str(Str {
+                value: pathname.params[pathname.params.len() - 1 - i].clone(),
+                ..Take::dummy()
+              }))))],
+            })),
+          );
+        }
+      }
+    }
+
+    let mut replacement = Box::new(Expr::Tpl(tpl));
 
     std::mem::swap(value_node, &mut replacement);
 
@@ -462,15 +663,81 @@ impl<'a> VisitMut for ComponentTransformVisitor<'a> {
   }
 
   fn visit_mut_function(&mut self, func: &mut Function) {
+    let mut replacement_state: ParameterizedRoutePathnameReplacementState = Default::default();
+    let mut replace_placeholders = false;
+    if let RoutePathname::Parameterized(pathname) = &mut self.route_pathname {
+      if pathname.replacement_state.is_none() {
+        replace_placeholders = true;
+        pathname.replacement_state = Some(&mut replacement_state);
+      }
+    }
+
     let mut idents = HashSet::<Atom>::new();
     grab_idents_from_pats(&mut idents, &mut func.params.iter().map(|p| &p.pat));
     visit_children_with_scope!(self, func.body, idents);
+
+    if let RoutePathname::Parameterized(pathname) = &mut self.route_pathname {
+      if replace_placeholders && pathname.replacement_state.is_some() {
+        pathname.replacement_state = None;
+        if let Some(body) = &mut func.body {
+          if replacement_state.prop_refs.len() > 0 {
+            replacement_state.replace_placeholder_prop_references(
+              &mut self.atom_store,
+              &mut func.params[0].pat,
+              body,
+            );
+          }
+        }
+      }
+    }
   }
 
   fn visit_mut_arrow_expr(&mut self, arrow: &mut ArrowExpr) {
+    let mut replacement_state: ParameterizedRoutePathnameReplacementState = Default::default();
+    let mut replace_placeholders = false;
+    if let RoutePathname::Parameterized(pathname) = &mut self.route_pathname {
+      if pathname.replacement_state.is_none() {
+        replace_placeholders = true;
+        pathname.replacement_state = Some(&mut replacement_state);
+      }
+    }
+
     let mut idents = HashSet::<Atom>::new();
     grab_idents_from_pats(&mut idents, &mut arrow.params.iter());
     visit_children_with_scope!(self, arrow.body, idents);
+
+    if let RoutePathname::Parameterized(pathname) = &mut self.route_pathname {
+      if replace_placeholders && pathname.replacement_state.is_some() {
+        pathname.replacement_state = None;
+
+        if replacement_state.prop_refs.len() > 0 {
+          if arrow.body.is_expr() {
+            let mut replacement = BlockStmtOrExpr::BlockStmt(BlockStmt {
+              stmts: vec![],
+              ..Take::dummy()
+            });
+
+            std::mem::swap(&mut *arrow.body, &mut replacement);
+
+            arrow
+              .body
+              .as_mut_block_stmt()
+              .unwrap()
+              .stmts
+              .push(Stmt::Return(ReturnStmt {
+                arg: Some(replacement.expect_expr()),
+                span: Take::dummy(),
+              }));
+          }
+
+          replacement_state.replace_placeholder_prop_references(
+            &mut self.atom_store,
+            &mut arrow.params[0],
+            arrow.body.as_mut_block_stmt().unwrap(),
+          );
+        }
+      }
+    }
   }
 
   fn visit_mut_block_stmt(&mut self, block: &mut BlockStmt) {
