@@ -9,20 +9,10 @@ import {
   Suspense,
   type SuspenseProps,
   dangerouslyPreventEscaping,
+  type ResolvedTemplateProps,
 } from "easy-jsx-html-engine";
 import { renderToStream } from "easy-jsx-html-engine/stream-webapi";
-import { type Context, type Handler, Hono, type MiddlewareHandler } from "hono";
-
-function renderStream<P extends { rid: SuspenseRequestID }>(
-  waitUntil: ((promise: Promise<unknown>) => void) | undefined,
-  component: Component<P>,
-  props: Omit<P, "rid">,
-) {
-  return renderToStream(
-    (rid: SuspenseRequestID) => createElement(component, { ...props, rid }),
-    waitUntil,
-  );
-}
+import type { Context, Handler, Hono, MiddlewareHandler } from "hono";
 
 export function buildHeadFn(
   headFns: RouteHeadFn[],
@@ -38,7 +28,7 @@ export function buildHeadFn(
   };
 }
 
-export function jsxRouteHandler(
+export type JSXRouteHandlerFactory = (
   rootContainer: (
     component: Component<RouteProps>,
     script?: string,
@@ -46,48 +36,75 @@ export function jsxRouteHandler(
   component: Component<RouteProps>,
   headFn: ReturnType<typeof buildHeadFn>,
   script?: string,
-): Handler {
-  return async (ctx: Context) => {
-    const url = new URL(ctx.req.url);
-    if (url.search === "?script") {
-      if (script) {
-        return ctx.newResponse(script, {
-          headers: { "content-type": "application/javascript" },
-        });
-      } else {
+) => Handler;
+
+export interface CreateJSXRouteHandlerFactoryOptions {
+  ResolvedTemplate?: Component<ResolvedTemplateProps>;
+}
+
+export function CreateJSXRouteHandlerFactory(
+  options: CreateJSXRouteHandlerFactoryOptions = {},
+): JSXRouteHandlerFactory {
+  return (
+      rootContainer: (
+        component: Component<RouteProps>,
+        script?: string,
+      ) => Component<RouteProps>,
+      component: Component<RouteProps>,
+      headFn: ReturnType<typeof buildHeadFn>,
+      script?: string,
+    ): Handler =>
+    async (ctx: Context) => {
+      const url = new URL(ctx.req.url);
+      if (url.search === "?script") {
+        if (script) {
+          return ctx.newResponse(script, {
+            headers: { "content-type": "application/javascript" },
+          });
+        }
+
         url.search = "";
         return ctx.redirect(url.href.slice(url.origin.length));
       }
-    }
 
-    let waitUntil: ((promise: Promise<unknown>) => void) | undefined;
-    try {
-      waitUntil = ctx.executionCtx.waitUntil?.bind(ctx.executionCtx);
-    } catch {
-      // ignore
-    }
-
-    try {
-      const head = await headFn(ctx);
-      return ctx.newResponse(
-        await renderStream(waitUntil, rootContainer(component, script), {
-          url,
-          ctx,
-          head,
-        }),
-        {
-          headers: { "content-type": "text/html" },
-        },
-      );
-    } catch (err) {
-      if (err instanceof Response) {
-        return err;
+      let waitUntil: ((promise: Promise<unknown>) => void) | undefined;
+      try {
+        waitUntil = ctx.executionCtx.waitUntil?.bind(ctx.executionCtx);
+      } catch {
+        // ignore
       }
 
-      throw err;
-    }
-  };
+      try {
+        const head = await headFn(ctx);
+        return ctx.newResponse(
+          await renderToStream(
+            (rid: SuspenseRequestID) =>
+              createElement(rootContainer(component, script), {
+                url,
+                ctx,
+                head,
+                rid,
+              }),
+            {
+              waitUntil,
+              ResolvedTemplate: options.ResolvedTemplate,
+            },
+          ),
+          {
+            headers: { "content-type": "text/html" },
+          },
+        );
+      } catch (err) {
+        if (err instanceof Response) {
+          return err;
+        }
+
+        throw err;
+      }
+    };
 }
+
+export const jsxRouteHandler = /* @__PURE__ */ CreateJSXRouteHandlerFactory();
 
 export function actionsMiddleware(
   actions: Record<string, Handler>,

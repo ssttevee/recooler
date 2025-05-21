@@ -39,8 +39,8 @@ importers:
         specifier: ^22.1.0
         version: 22.1.0
       easy-jsx-html-engine:
-        specifier: ^0.1.4
-        version: 0.1.4
+        specifier: ^0.1.7
+        version: 0.1.7
       hono:
         specifier: ^4.5.4
         version: 4.5.4
@@ -85,8 +85,8 @@ packages:
     engines: {node: '>=6'}
     dev: true
 
-  /easy-jsx-html-engine@0.1.4:
-    resolution: {integrity: sha512-U9p0vujn+FoAE1KbB70DFxTSoxWVFlPw3IOZVk4S/h+Pw7VB7XxNUEAxFDaSNnSzbNKq+FoS4azCeQ+xtaHRiQ==}
+  /easy-jsx-html-engine@0.1.7:
+    resolution: {integrity: sha512-F3/DfP2IA7ke29nJ5W5Lzm410waV1gpCIjmjrKh1l9zG08mzY3fy1/wXFmd5PGgRvvwB5mtq83CHaKFVLDfo8g==}
     dependencies:
       clsx: 2.1.1
       html-escaper: 3.0.3

@@ -326,8 +326,8 @@ impl FarmPluginRecooler {
           }
 
           page_handler += format!(
-            "{}.get({}, jsxRouteHandler({}));\n",
-            hono_ident, pathjs, page_handler_params
+            "{}.get({}, {}({}));\n",
+            hono_ident, pathjs, self.route_handler_factory.name, page_handler_params
           )
           .as_str();
         }

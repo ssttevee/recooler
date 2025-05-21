@@ -34,11 +34,26 @@ use ids::GlobalIds;
 use imports::UniqueImportIdentifiers;
 use routes::file_to_route_path;
 
+#[derive(Debug, serde::Deserialize)]
+#[serde(untagged)]
+pub enum RouteHandlerFactoryInput {
+  String(String),
+  Tuple1((String,)),
+  Tuple2((String, Option<String>)),
+}
+
 #[derive(serde::Deserialize)]
 pub struct RecoolerOptions {
   pub src_dir: Option<String>,
   pub routes_dir: Option<String>,
   pub reuse_modules: Option<bool>,
+  pub route_handler_factory: Option<RouteHandlerFactoryInput>,
+}
+
+struct ModuleSymbol {
+  module: String,
+  default: bool,
+  name: String,
 }
 
 #[farm_plugin]
@@ -49,8 +64,11 @@ pub struct FarmPluginRecooler {
   atom_store: Mutex<RefCell<AtomStore>>,
   scanned_dir: farmfe_core::parking_lot::RwLock<Option<routes::ScannedDir>>,
   scanned_routes: farmfe_core::parking_lot::RwLock<Option<routes::ScanResult>>,
+  route_handler_factory: ModuleSymbol,
   reuse_modules: bool,
 }
+
+static DEFAULT_ROUTE_HANDLER_IDENT: &str = "jsxRouteHandler";
 
 impl FarmPluginRecooler {
   fn new(_config: &Config, options_str: String) -> Self {
@@ -70,6 +88,7 @@ impl FarmPluginRecooler {
     } else {
       src_dir.join("routes")
     };
+
     Self {
       src_dir: src_dir.to_string(),
       routes_dir: routes_dir.to_string(),
@@ -78,6 +97,30 @@ impl FarmPluginRecooler {
       scanned_routes: Default::default(),
       scanned_dir: Default::default(),
       reuse_modules: options.reuse_modules.unwrap_or(false),
+      route_handler_factory: options.route_handler_factory.map_or_else(
+        || ModuleSymbol {
+          module: "farm-plugin-recooler/helpers".to_string(),
+          default: false,
+          name: DEFAULT_ROUTE_HANDLER_IDENT.to_string(),
+        },
+        |input| match input {
+          RouteHandlerFactoryInput::String(module) => ModuleSymbol {
+            module: module,
+            default: true,
+            name: DEFAULT_ROUTE_HANDLER_IDENT.to_string(),
+          },
+          RouteHandlerFactoryInput::Tuple1((module,)) => ModuleSymbol {
+            module: module,
+            default: true,
+            name: DEFAULT_ROUTE_HANDLER_IDENT.to_string(),
+          },
+          RouteHandlerFactoryInput::Tuple2((module, name)) => ModuleSymbol {
+            module: module,
+            default: name.is_none(),
+            name: name.unwrap(),
+          },
+        },
+      ),
     }
   }
 }
@@ -504,7 +547,8 @@ impl FarmPluginRecooler {
       format!(
         r#"
         import {{ Hono }} from "hono";
-        import {{ jsxRouteHandler, actionsMiddleware, buildHeadFn, makeCloudflarePagesHandler }} from "farm-plugin-recooler/helpers";
+        import {{ actionsMiddleware, buildHeadFn, makeCloudflarePagesHandler }} from "farm-plugin-recooler/helpers";
+        import {} from {};
         {}
 
         {}
@@ -518,6 +562,12 @@ impl FarmPluginRecooler {
         export default app;
         export const onRequest = /* #__PURE__ */ makeCloudflarePagesHandler(app);
         "#,
+        if self.route_handler_factory.default {
+            self.route_handler_factory.name.clone()
+        } else {
+            format!("{{ {} }}", self.route_handler_factory.name)
+        },
+        serde_json::to_string(&self.route_handler_factory.module).unwrap(),
         import_idents.imports_str(),
         after_imports,
         handlers,
