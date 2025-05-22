@@ -160,12 +160,12 @@ impl<'a> ComponentHandlerValidationVisitor<'a> {
       panic!("unexpected event handler value type");
     }
 
-    println!(
-      "validated event handler {} {} {}",
-      self.module_id.relative_path(),
-      export_name,
-      event_handler_id
-    );
+    // println!(
+    //   "validated event handler {} {} {}",
+    //   self.module_id.relative_path(),
+    //   export_name,
+    //   event_handler_id
+    // );
   }
 }
 
