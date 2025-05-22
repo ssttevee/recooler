@@ -750,22 +750,28 @@ impl<'a> VisitMut for ComponentTransformVisitor<'a> {
   }
 
   fn visit_mut_jsx_attr(&mut self, node: &mut JSXAttr) {
-    if let JSXAttrName::Ident(name) = &node.name {
-      if let Some(JSXAttrValue::JSXExprContainer(JSXExprContainer {
-        expr: JSXExpr::Expr(expr),
-        ..
-      })) = &mut node.value
-      {
-        let key = name.sym.as_str();
-        if key.starts_with("hx-on:") || key.starts_with("hx-on-") {
+    if let Some(JSXAttrValue::JSXExprContainer(JSXExprContainer {
+      expr: JSXExpr::Expr(expr),
+      ..
+    })) = &mut node.value
+    {
+      if is_fn(expr) {
+        let name = match &node.name {
+          JSXAttrName::Ident(name) => name.sym.as_str().to_string(),
+          JSXAttrName::JSXNamespacedName(namespaced_name) => {
+            format!("{}:{}", namespaced_name.ns.sym, namespaced_name.name.sym)
+          }
+        };
+
+        if name.starts_with("hx-on:") || name.starts_with("hx-on-") {
           self.add_event_handler(expr);
           return;
         }
 
-        if key.starts_with("hx-") && is_fn(expr) {
+        if name.starts_with("hx-") {
           macro_rules! form_action {
             ($method:ident) => {
-              if &key[3..]
+              if &name[3..]
                 == const_format::map_ascii_case!(const_format::Case::Lower, stringify!($method))
               {
                 self.add_action(FormActionMethod::$method, expr);
