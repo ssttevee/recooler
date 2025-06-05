@@ -1,6 +1,6 @@
 {
   "name": "farm-plugin-recooler",
-  "version": "0.0.18",
+  "version": "0.0.19",
   "main": "scripts/index.js",
   "types": "scripts/index.d.ts",
   "type": "module",
