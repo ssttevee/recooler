@@ -93,6 +93,7 @@ impl FarmPluginRecooler {
     tree: &RouteGroupTree,
     inline_middlewares: Option<Vec<ModuleId>>,
   ) -> Result<String> {
+    let mut middlewares = String::new();
     let mut handlers = String::new();
 
     let should_inline_middleware = inline_middlewares.is_some();
@@ -196,7 +197,7 @@ impl FarmPluginRecooler {
             serde_json::to_string(&(path.clone() + "/*")).unwrap()
           };
 
-          handlers += format!(
+          middlewares += format!(
             "{}.use({}{});\n",
             hono_ident,
             use_params_prefix + ", ",
@@ -338,7 +339,7 @@ impl FarmPluginRecooler {
       }
     }
 
-    Ok(handlers)
+    Ok(middlewares + handlers.as_str())
   }
 }
 
