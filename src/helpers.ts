@@ -114,7 +114,10 @@ export function actionsMiddleware(
     const action = actions[params.get("action")!];
     if (action) {
       const result = await action(ctx, next);
-      if ("toHTML" in result) {
+      if (result === undefined || result === null) {
+        return ctx.newResponse(null, 204);
+      }
+      if (typeof result === "object" && "toHTML" in result) {
         return ctx.html(result.toHTML());
       }
       return result;
