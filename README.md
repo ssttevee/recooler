@@ -221,6 +221,8 @@ return (
 );
 ```
 
+NOTE: Routes with path parameters must have `ctx` available as a prop. See [gotchas and workarounds](#form-actions-in-parameterized-routes).
+
 ### Event Handlers
 
 Any `hx-on:{event}` attributes with function values will be extracted and bundled into a specialized client script for each page. Just like form actions, this works for all components within the configured source directory (which is `src` by default), including layouts and the root component. These function can be expected to run on the client, as if simply added with `elem.addEventListener("event", fn)`. It does not have access to the hono context because it is executed on the client side, but it does have access to the element that triggered the event, as well as the event itself.
@@ -326,6 +328,47 @@ export default defineConfig({
   // ...
 });
 ```
+
+## Gotchas and workarounds
+
+Here is a running list of rough edges that you may encounter and how they can be worked around:
+
+### form actions in parameterized routes
+
+```
+TypeError: Cannot read properties of undefined (reading 'req')
+```
+
+For pages with a parameterized route (i.e. `/article/[id]/index.tsx`), there needs a way to get the path parameter value to get the actual path. As such, the plugin assumes that the component containing the form action function to have `ctx` passed in with the props. This assumption is made because it is true for the page component, which makes it very easy for simple apps.
+
+```tsx
+// /article/[id]/index.tsx
+
+export default function (props: RouteProps) {
+  return (
+    <>
+      {/* ... */}
+      <LikeButton ctx={props.ctx} />
+      {/* ... */}
+    </>
+  );
+}
+
+function LikeButton({ ...otherProps }: OtherProps & { ctx: HonoContext }) {
+  return (
+    <button
+      hx-get={async () => {
+        await doSomething();
+        return <></>;
+      }}
+    >
+      Like +1
+    </button>
+  );
+}
+```
+
+NOTE: `ctx` does not need to be destructured or pulled out in any way. The plugin is able to handle getting the path param, regardless of how the props are used, as long as it is passed into the component with the name/attribute `ctx`.
 
 ## About
 
