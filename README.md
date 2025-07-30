@@ -6,6 +6,8 @@ The name recooler is an homage to the htmx predecessor [intercooler](https://int
 
 ## Quick Start
 
+https://github.com/ssttevee/recooler-cloudflare-workers-template
+
 TODO: create a `npm create` command to scaffold a new project with a basic setup.
 
 ## Configuration
