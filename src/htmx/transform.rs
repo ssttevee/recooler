@@ -413,50 +413,77 @@ impl<'a> ComponentTransformVisitor<'a> {
                   self.atom_store.atom("_$$ctx"),
                   Default::default(),
                 ))),
-                // should be `Object.fromEntries(await ctx.req.formData())`
-                ExprOrSpread::from(Expr::Call(CallExpr {
+                // should be `ctx.req.method === "GET" ? null : Object.fromEntries(await ctx.req.formData())`
+                ExprOrSpread::from(Expr::Cond(CondExpr {
                   span: Default::default(),
-                  callee: Callee::Expr(Box::new(Expr::Member(MemberExpr {
+                  test: Box::new(Expr::Bin(BinExpr {
                     span: Default::default(),
-                    obj: Box::new(Expr::Ident(Ident::new(
-                      self.atom_store.atom("Object"),
-                      Take::dummy(),
-                    ))),
-                    prop: MemberProp::Ident(Ident::new(
-                      self.atom_store.atom("fromEntries"),
-                      Take::dummy(),
-                    )),
-                  }))),
-                  args: vec![ExprOrSpread {
-                    spread: None,
-                    expr: Box::new(Expr::Await(AwaitExpr {
+                    op: BinaryOp::EqEqEq,
+                    left: Box::new(Expr::Member(MemberExpr {
                       span: Default::default(),
-                      arg: Box::new(Expr::Call(CallExpr {
+                      obj: Box::new(Expr::Member(MemberExpr {
                         span: Default::default(),
-                        callee: Callee::Expr(Box::new(Expr::Member(MemberExpr {
+                        obj: Box::new(Expr::Ident(Ident::new(
+                          self.atom_store.atom("_$$ctx"),
+                          Take::dummy(),
+                        ))),
+                        prop: MemberProp::Ident(Ident::new(
+                          self.atom_store.atom("req"),
+                          Take::dummy(),
+                        )),
+                      })),
+                      prop: MemberProp::Ident(Ident::new(
+                        self.atom_store.atom("method"),
+                        Take::dummy(),
+                      )),
+                    })),
+                    right: Box::new(Expr::Lit(Lit::from("GET"))),
+                  })),
+                  cons: Box::new(Expr::Lit(Lit::Null(Take::dummy()))),
+                  alt: Box::new(Expr::Call(CallExpr {
+                    span: Default::default(),
+                    callee: Callee::Expr(Box::new(Expr::Member(MemberExpr {
+                      span: Default::default(),
+                      obj: Box::new(Expr::Ident(Ident::new(
+                        self.atom_store.atom("Object"),
+                        Take::dummy(),
+                      ))),
+                      prop: MemberProp::Ident(Ident::new(
+                        self.atom_store.atom("fromEntries"),
+                        Take::dummy(),
+                      )),
+                    }))),
+                    args: vec![ExprOrSpread {
+                      spread: None,
+                      expr: Box::new(Expr::Await(AwaitExpr {
+                        span: Default::default(),
+                        arg: Box::new(Expr::Call(CallExpr {
                           span: Default::default(),
-                          obj: Box::new(Expr::Member(MemberExpr {
+                          callee: Callee::Expr(Box::new(Expr::Member(MemberExpr {
                             span: Default::default(),
-                            obj: Box::new(Expr::Ident(Ident::new(
-                              self.atom_store.atom("_$$ctx"),
-                              Take::dummy(),
-                            ))),
+                            obj: Box::new(Expr::Member(MemberExpr {
+                              span: Default::default(),
+                              obj: Box::new(Expr::Ident(Ident::new(
+                                self.atom_store.atom("_$$ctx"),
+                                Take::dummy(),
+                              ))),
+                              prop: MemberProp::Ident(Ident::new(
+                                self.atom_store.atom("req"),
+                                Take::dummy(),
+                              )),
+                            })),
                             prop: MemberProp::Ident(Ident::new(
-                              self.atom_store.atom("req"),
+                              self.atom_store.atom("formData"),
                               Take::dummy(),
                             )),
-                          })),
-                          prop: MemberProp::Ident(Ident::new(
-                            self.atom_store.atom("formData"),
-                            Take::dummy(),
-                          )),
-                        }))),
-                        args: vec![],
-                        type_args: None,
+                          }))),
+                          args: vec![],
+                          type_args: None,
+                        })),
                       })),
-                    })),
-                  }],
-                  type_args: None,
+                    }],
+                    type_args: None,
+                  })),
                 })),
               ],
               type_args: None,
