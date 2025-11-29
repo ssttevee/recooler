@@ -36,7 +36,10 @@ declare interface RouteHeadFn<TContext = HonoContext> {
   (ctx: TContext, prev: RouteHead): Promise<RouteHead> | RouteHead;
 }
 
-declare interface FormActionFn<TPayload = any, TContext = HonoContext> {
+declare interface FormActionFn<
+  TPayload = any,
+  TContext extends HonoContext = HonoContext,
+> {
   (
     ctx: TContext,
     payload: TPayload,

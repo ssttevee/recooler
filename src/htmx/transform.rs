@@ -76,6 +76,37 @@ pub(crate) fn transform_module(
 
   swc_module.visit_mut_with(&mut visitor);
 
+  swc_module
+    .body
+    .push(ModuleItem::ModuleDecl(ModuleDecl::Import(ImportDecl {
+      src: Box::new(Str {
+        span: Default::default(),
+        value: visitor.atom_store.atom("farm-plugin-recooler/helpers"),
+        raw: None,
+      }),
+      specifiers: vec![
+        ImportSpecifier::Named(ImportNamedSpecifier {
+          span: Default::default(),
+          local: Ident::new(visitor.atom_store.atom("wrapAction"), Default::default()),
+          imported: None,
+          is_type_only: false,
+        }),
+        ImportSpecifier::Named(ImportNamedSpecifier {
+          span: Default::default(),
+          local: Ident::new(
+            visitor.atom_store.atom("wrapActionWithPayload"),
+            Default::default(),
+          ),
+          imported: None,
+          is_type_only: false,
+        }),
+      ],
+      with: None,
+      type_only: false,
+      phase: ImportPhase::Evaluation,
+      span: Default::default(),
+    })));
+
   for decl in visitor.new_decls {
     swc_module
       .body
@@ -163,6 +194,7 @@ struct ComponentTransformVisitor<'a> {
 
   idents: LocalHandlerIdentGenerator,
 
+  // new_imports: Vec<>,
   new_decls: Vec<Decl>,
 
   scopes: Option<Rc<Vec<Rc<HashSet<Atom>>>>>,
@@ -294,10 +326,10 @@ impl<'a> ComponentTransformVisitor<'a> {
             props: captured_vars
               .iter()
               .map(|v| {
-                PropOrSpread::Prop(Box::new(Prop::Shorthand(Ident::new(
-                  v.clone(),
-                  Default::default(),
-                ))))
+                PropOrSpread::Prop(Box::new(Prop::KeyValue(KeyValueProp {
+                  key: PropName::Ident(Ident::new(v.clone(), Take::dummy())),
+                  value: Box::new(Expr::Ident(Ident::new(v.clone(), Take::dummy()))),
+                })))
               })
               .collect::<Vec<_>>(),
           })))],
@@ -307,6 +339,11 @@ impl<'a> ComponentTransformVisitor<'a> {
       }))],
       span: Default::default(),
     };
+
+    if !captured_vars.is_empty() {
+      println!("captured_vars: {:?}", captured_vars);
+      inject_scope(value_node, captured_vars, self.atom_store)
+    }
 
     match &self.route_pathname {
       RoutePathname::Fixed(str) => {
@@ -398,189 +435,18 @@ impl<'a> ComponentTransformVisitor<'a> {
           id: Ident::new(self.atom_store.atom(export_name), Default::default()),
           type_ann: None,
         }),
-        init: Some(Box::new(Expr::Arrow(ArrowExpr {
+        init: Some(Box::new(Expr::Call(CallExpr {
           span: Default::default(),
-          params: vec![Pat::Ident(BindingIdent {
-            id: Ident::new(self.atom_store.atom("_$$ctx"), Default::default()),
-            type_ann: None,
-          })],
-          body: Box::new({
-            let action_iife = Box::new(Expr::Call(CallExpr {
-              span: Default::default(),
-              callee: Callee::Expr(replacement),
-              args: vec![
-                ExprOrSpread::from(Expr::Ident(Ident::new(
-                  self.atom_store.atom("_$$ctx"),
-                  Default::default(),
-                ))),
-                // should be `ctx.req.method === "GET" ? null : Object.fromEntries(await ctx.req.formData())`
-                ExprOrSpread::from(Expr::Cond(CondExpr {
-                  span: Default::default(),
-                  test: Box::new(Expr::Bin(BinExpr {
-                    span: Default::default(),
-                    op: BinaryOp::EqEqEq,
-                    left: Box::new(Expr::Member(MemberExpr {
-                      span: Default::default(),
-                      obj: Box::new(Expr::Member(MemberExpr {
-                        span: Default::default(),
-                        obj: Box::new(Expr::Ident(Ident::new(
-                          self.atom_store.atom("_$$ctx"),
-                          Take::dummy(),
-                        ))),
-                        prop: MemberProp::Ident(Ident::new(
-                          self.atom_store.atom("req"),
-                          Take::dummy(),
-                        )),
-                      })),
-                      prop: MemberProp::Ident(Ident::new(
-                        self.atom_store.atom("method"),
-                        Take::dummy(),
-                      )),
-                    })),
-                    right: Box::new(Expr::Lit(Lit::from("GET"))),
-                  })),
-                  cons: Box::new(Expr::Lit(Lit::Null(Take::dummy()))),
-                  alt: Box::new(Expr::Call(CallExpr {
-                    span: Default::default(),
-                    callee: Callee::Expr(Box::new(Expr::Member(MemberExpr {
-                      span: Default::default(),
-                      obj: Box::new(Expr::Ident(Ident::new(
-                        self.atom_store.atom("Object"),
-                        Take::dummy(),
-                      ))),
-                      prop: MemberProp::Ident(Ident::new(
-                        self.atom_store.atom("fromEntries"),
-                        Take::dummy(),
-                      )),
-                    }))),
-                    args: vec![ExprOrSpread {
-                      spread: None,
-                      expr: Box::new(Expr::Await(AwaitExpr {
-                        span: Default::default(),
-                        arg: Box::new(Expr::Call(CallExpr {
-                          span: Default::default(),
-                          callee: Callee::Expr(Box::new(Expr::Member(MemberExpr {
-                            span: Default::default(),
-                            obj: Box::new(Expr::Member(MemberExpr {
-                              span: Default::default(),
-                              obj: Box::new(Expr::Ident(Ident::new(
-                                self.atom_store.atom("_$$ctx"),
-                                Take::dummy(),
-                              ))),
-                              prop: MemberProp::Ident(Ident::new(
-                                self.atom_store.atom("req"),
-                                Take::dummy(),
-                              )),
-                            })),
-                            prop: MemberProp::Ident(Ident::new(
-                              self.atom_store.atom("formData"),
-                              Take::dummy(),
-                            )),
-                          }))),
-                          args: vec![],
-                          type_args: None,
-                        })),
-                      })),
-                    }],
-                    type_args: None,
-                  })),
-                })),
-              ],
-              type_args: None,
-            }));
-
-            if captured_vars.is_empty() {
-              BlockStmtOrExpr::Expr(action_iife)
+          callee: Callee::Expr(Box::new(Expr::Ident(Ident::new(
+            self.atom_store.atom(if method == FormActionMethod::Get {
+              "wrapAction"
             } else {
-              BlockStmtOrExpr::BlockStmt(BlockStmt {
-                span: Default::default(),
-                stmts: vec![
-                  Stmt::Decl(Decl::Var(Box::new(VarDecl {
-                    span: Default::default(),
-                    kind: VarDeclKind::Const,
-                    declare: false,
-                    decls: vec![VarDeclarator {
-                      span: Default::default(),
-                      name: Pat::Object(ObjectPat {
-                        span: Default::default(),
-                        props: captured_vars
-                          .iter()
-                          .map(|v| {
-                            ObjectPatProp::Assign(AssignPatProp {
-                              span: Default::default(),
-                              key: BindingIdent {
-                                id: Ident::new(v.clone(), Default::default()),
-                                type_ann: None,
-                              },
-                              value: None,
-                            })
-                          })
-                          .collect(),
-                        optional: false,
-                        type_ann: None,
-                      }),
-                      // init should be `JSON.parse(ctx.req.query("scope") ?? "{}")`
-                      init: Some(Box::new(Expr::Call(CallExpr {
-                        span: Default::default(),
-                        callee: Callee::Expr(Box::new(Expr::Member(MemberExpr {
-                          span: Default::default(),
-                          obj: Box::new(Expr::Ident(Ident::new(
-                            self.atom_store.atom("JSON"),
-                            Default::default(),
-                          ))),
-                          prop: MemberProp::Ident(Ident::new(
-                            self.atom_store.atom("parse"),
-                            Default::default(),
-                          )),
-                        }))),
-                        args: vec![ExprOrSpread::from(Expr::Bin(BinExpr {
-                          span: Default::default(),
-                          op: BinaryOp::NullishCoalescing,
-                          left: Box::new(Expr::Call(CallExpr {
-                            span: Default::default(),
-                            callee: Callee::Expr(Box::new(Expr::Member(MemberExpr {
-                              span: Default::default(),
-                              obj: Box::new(Expr::Member(MemberExpr {
-                                span: Default::default(),
-                                obj: Box::new(Expr::Ident(Ident::new(
-                                  self.atom_store.atom("_$$ctx"),
-                                  Default::default(),
-                                ))),
-                                prop: MemberProp::Ident(Ident::new(
-                                  self.atom_store.atom("req"),
-                                  Default::default(),
-                                )),
-                              })),
-                              prop: MemberProp::Ident(Ident::new(
-                                self.atom_store.atom("query"),
-                                Default::default(),
-                              )),
-                            }))),
-                            args: vec![ExprOrSpread {
-                              spread: None,
-                              expr: Box::new(Expr::Lit(Lit::from("scope"))),
-                            }],
-                            type_args: None,
-                          })),
-                          right: Box::new(Expr::Lit(Lit::from("{}"))),
-                        }))],
-                        type_args: None,
-                      }))),
-                      definite: false,
-                    }],
-                  }))),
-                  Stmt::Return(ReturnStmt {
-                    span: Default::default(),
-                    arg: Some(action_iife),
-                  }),
-                ],
-              })
-            }
-          }),
-          is_async: true,
-          is_generator: false,
-          type_params: None,
-          return_type: None,
+              "wrapActionWithPayload"
+            }),
+            Take::dummy(),
+          )))),
+          type_args: None,
+          args: vec![ExprOrSpread::from(replacement)],
         }))),
         ..Take::dummy()
       }],
@@ -849,6 +715,195 @@ impl<'a> VisitMut for ComponentTransformVisitor<'a> {
 
     node.visit_mut_children_with(self);
   }
+}
+
+fn inject_scope_into_blockstmt(
+  ctx_atom: Atom,
+  block: &mut BlockStmt,
+  captured_vars: Vec<Atom>,
+  atom_store: &mut AtomStore,
+) {
+  block.stmts.insert(
+    0,
+    Stmt::Decl(Decl::Var(Box::new(VarDecl {
+      span: Default::default(),
+      kind: VarDeclKind::Const,
+      declare: false,
+      decls: vec![VarDeclarator {
+        span: Default::default(),
+        name: Pat::Object(ObjectPat {
+          span: Default::default(),
+          props: captured_vars
+            .iter()
+            .map(|v| {
+              ObjectPatProp::Assign(AssignPatProp {
+                span: Default::default(),
+                key: BindingIdent {
+                  id: Ident::new(v.clone(), Default::default()),
+                  type_ann: None,
+                },
+                value: None,
+              })
+            })
+            .collect(),
+          optional: false,
+          type_ann: None,
+        }),
+        // init should be `JSON.parse(ctx.req.query("scope") ?? "{}")`
+        init: Some(Box::new(Expr::Call(CallExpr {
+          span: Default::default(),
+          callee: Callee::Expr(Box::new(Expr::Member(MemberExpr {
+            span: Default::default(),
+            obj: Box::new(Expr::Ident(Ident::new(
+              atom_store.atom("JSON"),
+              Default::default(),
+            ))),
+            prop: MemberProp::Ident(Ident::new(atom_store.atom("parse"), Default::default())),
+          }))),
+          args: vec![ExprOrSpread::from(Expr::Bin(BinExpr {
+            span: Default::default(),
+            op: BinaryOp::NullishCoalescing,
+            left: Box::new(Expr::Call(CallExpr {
+              span: Default::default(),
+              callee: Callee::Expr(Box::new(Expr::Member(MemberExpr {
+                span: Default::default(),
+                obj: Box::new(Expr::Member(MemberExpr {
+                  span: Default::default(),
+                  obj: Box::new(Expr::Ident(Ident::new(ctx_atom, Default::default()))),
+                  prop: MemberProp::Ident(Ident::new(atom_store.atom("req"), Default::default())),
+                })),
+                prop: MemberProp::Ident(Ident::new(atom_store.atom("query"), Default::default())),
+              }))),
+              args: vec![ExprOrSpread {
+                spread: None,
+                expr: Box::new(Expr::Lit(Lit::from("scope"))),
+              }],
+              type_args: None,
+            })),
+            right: Box::new(Expr::Lit(Lit::from("{}"))),
+          }))],
+          type_args: None,
+        }))),
+        definite: false,
+      }],
+    }))),
+  )
+}
+
+fn inject_scope(expr: &mut Expr, captured_vars: Vec<Atom>, atom_store: &mut AtomStore) {
+  match expr {
+    Expr::Fn(FnExpr { function, .. }) => {
+      if let Some(block) = function.body.as_mut() {
+        if function.params.is_empty() {
+          atom_store.atom("_$$ctx");
+          function.params.push(Param {
+            pat: Pat::Ident(BindingIdent {
+              id: Ident::new(atom_store.atom("_$$ctx"), Default::default()),
+              type_ann: None,
+            }),
+            decorators: vec![],
+            span: Default::default(),
+          });
+        } else {
+          match &mut function.params[0].pat {
+            Pat::Ident(_) => {}
+            pat => {
+              let mut new_pat = Pat::Ident(BindingIdent {
+                id: Ident::new(atom_store.atom("_$$ctx"), Default::default()),
+                type_ann: None,
+              });
+
+              std::mem::swap(pat, &mut new_pat);
+
+              block.stmts.insert(
+                0,
+                Stmt::Decl(Decl::Var(Box::new(VarDecl {
+                  decls: vec![VarDeclarator {
+                    name: new_pat,
+                    init: Some(Box::new(Expr::Ident(Ident::new(
+                      atom_store.atom("_$$ctx"),
+                      Default::default(),
+                    )))),
+                    ..Take::dummy()
+                  }],
+                  ..Take::dummy()
+                }))),
+              );
+            }
+          }
+        }
+
+        inject_scope_into_blockstmt(
+          function.params[0].pat.as_ident().unwrap().id.sym.clone(),
+          block,
+          captured_vars,
+          atom_store,
+        );
+      }
+    }
+    Expr::Arrow(arrow) => {
+      let mut prepend: Option<Stmt> = None;
+      let ctx_atom = if arrow.params.is_empty() {
+        arrow.params.push(Pat::Ident(BindingIdent {
+          id: Ident::new(atom_store.atom("_$$ctx"), Default::default()),
+          type_ann: None,
+        }));
+        atom_store.atom("_$$ctx")
+      } else {
+        match &mut arrow.params[0] {
+          Pat::Ident(_) => {}
+          pat => {
+            let mut new_pat = Pat::Ident(BindingIdent {
+              id: Ident::new(atom_store.atom("_$$ctx"), Default::default()),
+              type_ann: None,
+            });
+
+            std::mem::swap(pat, &mut new_pat);
+
+            prepend = Some(Stmt::Decl(Decl::Var(Box::new(VarDecl {
+              decls: vec![VarDeclarator {
+                name: new_pat,
+                init: Some(Box::new(Expr::Ident(Ident::new(
+                  atom_store.atom("_$$ctx"),
+                  Default::default(),
+                )))),
+                ..Take::dummy()
+              }],
+              ..Take::dummy()
+            }))));
+          }
+        }
+        arrow.params[0].as_ident().unwrap().id.sym.clone()
+      };
+
+      match *arrow.body.clone() {
+        BlockStmtOrExpr::BlockStmt(mut block) => {
+          if let Some(stmt) = prepend {
+            block.stmts.insert(0, stmt);
+          }
+          inject_scope_into_blockstmt(ctx_atom, &mut block, captured_vars, atom_store);
+          arrow.body = Box::new(BlockStmtOrExpr::BlockStmt(block));
+        }
+        BlockStmtOrExpr::Expr(expr) => {
+          let mut block = BlockStmt {
+            stmts: vec![Stmt::Expr(ExprStmt {
+              expr: expr,
+              span: Default::default(),
+            })],
+            ..Take::dummy()
+          };
+
+          if let Some(stmt) = prepend {
+            block.stmts.insert(0, stmt);
+          }
+          inject_scope_into_blockstmt(ctx_atom, &mut block, captured_vars, atom_store);
+
+          arrow.body = Box::new(BlockStmtOrExpr::BlockStmt(block));
+        }
+      }
+    }
+    _ => {}
+  };
 }
 
 fn grab_idents_from_pats<'a>(idents: &mut HashSet<Atom>, pats: &mut impl Iterator<Item = &'a Pat>) {

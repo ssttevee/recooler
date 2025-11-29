@@ -6,7 +6,6 @@ use farmfe_core::{
     ArrowExpr, Decl, ExportSpecifier, Expr, FnExpr, ModuleDecl, ModuleExportName, ModuleItem, Pat,
   },
 };
-use farmfe_toolkit::swc_ecma_codegen::to_code;
 
 use crate::head::HeadType;
 

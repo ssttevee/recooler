@@ -1,15 +1,15 @@
 import {
+  ErrorBoundary as _ErrorBoundary,
   type Component,
   createElement,
-  Fragment,
-  type SuspenseRequestID,
-  ErrorBoundary as _ErrorBoundary,
-  type ErrorBoundaryProps,
+  dangerouslyPreventEscaping,
   defaultCatch,
+  type ErrorBoundaryProps,
+  Fragment,
+  type ResolvedTemplateProps,
   Suspense,
   type SuspenseProps,
-  dangerouslyPreventEscaping,
-  type ResolvedTemplateProps,
+  type SuspenseRequestID,
 } from "easy-jsx-html-engine";
 import { renderToStream } from "easy-jsx-html-engine/stream-webapi";
 import type { Context, Handler, Hono, MiddlewareHandler } from "hono";
@@ -105,6 +105,21 @@ export function CreateJSXRouteHandlerFactory(
 }
 
 export const jsxRouteHandler = /* @__PURE__ */ CreateJSXRouteHandlerFactory();
+
+export function wrapAction<TContext extends HonoContext = HonoContext>(
+  action: FormActionFn<null, TContext>,
+) {
+  return (ctx: TContext) => action(ctx, null);
+}
+
+export function wrapActionWithPayload<
+  TContext extends HonoContext = HonoContext,
+>(action: FormActionFn<any, TContext>) {
+  return async (ctx: TContext) => {
+    const fd = await ctx.req.formData();
+    return action(ctx, { ...Object.fromEntries(fd), __formData: fd });
+  };
+}
 
 export function actionsMiddleware(
   actions: Record<string, Handler>,
