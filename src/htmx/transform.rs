@@ -341,7 +341,6 @@ impl<'a> ComponentTransformVisitor<'a> {
     };
 
     if !captured_vars.is_empty() {
-      println!("captured_vars: {:?}", captured_vars);
       inject_scope(value_node, captured_vars, self.atom_store)
     }
 
