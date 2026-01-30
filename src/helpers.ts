@@ -40,6 +40,7 @@ export type JSXRouteHandlerFactory = (
 
 export interface CreateJSXRouteHandlerFactoryOptions {
   ResolvedTemplate?: Component<ResolvedTemplateProps>;
+  suspenseCleanupScriptMiddleware?: (script: string) => string;
 }
 
 export function CreateJSXRouteHandlerFactory(
@@ -88,6 +89,7 @@ export function CreateJSXRouteHandlerFactory(
             {
               waitUntil,
               ResolvedTemplate: options.ResolvedTemplate,
+              cleanupScriptMiddleware: options.suspenseCleanupScriptMiddleware,
             },
           ),
           {
