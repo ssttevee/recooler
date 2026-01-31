@@ -1,6 +1,11 @@
 use std::{collections::HashSet, iter, rc::Rc};
 
-use farmfe_core::{module::ModuleId, serde_json, swc_common::util::take::Take, swc_ecma_ast::*};
+use farmfe_core::{
+  module::{CommentsMetaData, CommentsMetaDataItem, ModuleId},
+  serde_json,
+  swc_common::{comments::Comment, util::take::Take, BytePos, Span},
+  swc_ecma_ast::*,
+};
 use farmfe_toolkit::{
   swc_atoms::{Atom, AtomStore},
   swc_ecma_visit::{Visit, VisitMut, VisitMutWith, VisitWith},
@@ -22,6 +27,7 @@ pub(crate) fn transform_module(
   global_ids: &mut crate::GlobalIds,
   atom_store: &mut AtomStore,
   swc_module: &mut farmfe_core::swc_ecma_ast::Module,
+  comments: &mut CommentsMetaData,
 ) {
   let mut visitor = ComponentTransformVisitor {
     module_id,
@@ -72,6 +78,8 @@ pub(crate) fn transform_module(
     idents: Default::default(),
     new_decls: Default::default(),
     scopes: None,
+    comments,
+    synthesized_pos_counter: u32::MAX - 1000000,
   };
 
   swc_module.visit_mut_with(&mut visitor);
@@ -197,10 +205,24 @@ struct ComponentTransformVisitor<'a> {
   // new_imports: Vec<>,
   new_decls: Vec<Decl>,
 
+  comments: &'a mut CommentsMetaData,
+
   scopes: Option<Rc<Vec<Rc<HashSet<Atom>>>>>,
+
+  synthesized_pos_counter: u32,
 }
 
 impl<'a> ComponentTransformVisitor<'a> {
+  fn generate_unique_span(&mut self) -> Span {
+    let pos = BytePos(self.synthesized_pos_counter);
+    self.synthesized_pos_counter += 1;
+    Span {
+      lo: pos,
+      hi: pos,
+      ctxt: Default::default(),
+    }
+  }
+
   fn get_all_variables_in_scope(&self) -> Vec<Atom> {
     if let Some(scopes) = self.scopes.clone() {
       return scopes
@@ -427,6 +449,30 @@ impl<'a> ComponentTransformVisitor<'a> {
 
     std::mem::swap(value_node, &mut replacement);
 
+    let span = self.generate_unique_span();
+    let call_expr = Expr::Call(CallExpr {
+      span,
+      callee: Callee::Expr(Box::new(Expr::Ident(Ident::new(
+        self.atom_store.atom(if method == FormActionMethod::Get {
+          "wrapAction"
+        } else {
+          "wrapActionWithPayload"
+        }),
+        Take::dummy(),
+      )))),
+      type_args: None,
+      args: vec![ExprOrSpread::from(replacement)],
+    });
+
+    self.comments.leading.push(CommentsMetaDataItem {
+      byte_pos: span.lo,
+      comment: vec![Comment {
+        kind: farmfe_core::swc_common::comments::CommentKind::Block,
+        span,
+        text: "#__PURE__".into(),
+      }],
+    });
+
     self.new_decls.push(Decl::Var(Box::new(VarDecl {
       kind: VarDeclKind::Const,
       decls: vec![VarDeclarator {
@@ -434,19 +480,7 @@ impl<'a> ComponentTransformVisitor<'a> {
           id: Ident::new(self.atom_store.atom(export_name), Default::default()),
           type_ann: None,
         }),
-        init: Some(Box::new(Expr::Call(CallExpr {
-          span: Default::default(),
-          callee: Callee::Expr(Box::new(Expr::Ident(Ident::new(
-            self.atom_store.atom(if method == FormActionMethod::Get {
-              "wrapAction"
-            } else {
-              "wrapActionWithPayload"
-            }),
-            Take::dummy(),
-          )))),
-          type_args: None,
-          args: vec![ExprOrSpread::from(replacement)],
-        }))),
+        init: Some(Box::new(call_expr)),
         ..Take::dummy()
       }],
       ..Take::dummy()

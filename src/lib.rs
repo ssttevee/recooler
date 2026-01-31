@@ -302,6 +302,7 @@ impl Plugin for FarmPluginRecooler {
       ids_lock.get_mut(),
       atoms_lock.get_mut(),
       &mut script.ast,
+      &mut script.comments,
     );
 
     Ok(Some(()))
