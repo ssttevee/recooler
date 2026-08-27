@@ -109,9 +109,9 @@ export function CreateJSXRouteHandlerFactory(
 export const jsxRouteHandler = /* @__PURE__ */ CreateJSXRouteHandlerFactory();
 
 export function wrapAction<TContext extends HonoContext = HonoContext>(
-  action: FormActionFn<null, TContext>,
+  action: FormActionFn<{}, TContext>,
 ) {
-  return (ctx: TContext) => action(ctx, null);
+  return (ctx: TContext) => action(ctx, {});
 }
 
 export function wrapActionWithPayload<

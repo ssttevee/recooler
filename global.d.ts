@@ -38,7 +38,10 @@ declare interface RouteHeadFn<TContext = HonoContext> {
 
 type FormActionResult =
   | Awaited<import('hono/types').HandlerResponse<any>>
-  | import('easy-jsx-html-engine').Children
+  | Exclude<
+      import('easy-jsx-html-engine').Children,
+      Promise<import('easy-jsx-html-engine').Children>
+    >
   | void;
 
 declare interface FormActionFn<
