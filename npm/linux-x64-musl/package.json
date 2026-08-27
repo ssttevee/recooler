@@ -1,6 +1,9 @@
 {
   "name": "farm-plugin-recooler-linux-x64-musl",
   "version": "0.0.0",
+  "repository": {
+    "url": "https://github.com/ssttevee/recooler"
+  },
   "os": [
     "linux"
   ],

@@ -4,6 +4,10 @@ on:
     branches:
       - main
 
+permissions:
+  id-token: write  # Required for OIDC
+  contents: read
+
 concurrency: ${{ github.workflow }}-${{ github.ref }}
 
 jobs:
@@ -24,10 +28,10 @@ jobs:
           version: 9.4.0
           run_install: false
 
-      - name: Setup Node.js 18.x
-        uses: actions/setup-node@v3
+      - name: Setup Node.js 24.x
+        uses: actions/setup-node@v6
         with:
-          node-version: 18.x
+          node-version: 24.x
           cache: "pnpm"
 
       # batch download artifacts
@@ -52,4 +56,4 @@ jobs:
           command: pnpm i --frozen-lockfile
 
       - name: Publish to npm
-        run: npm set //registry.npmjs.org/:_authToken=${{ secrets.NPM_TOKEN }} && npm publish
+        run: npm publish

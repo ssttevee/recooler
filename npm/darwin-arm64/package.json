@@ -1,6 +1,9 @@
 {
   "name": "farm-plugin-recooler-darwin-arm64",
   "version": "0.0.0",
+  "repository": {
+    "url": "https://github.com/ssttevee/recooler"
+  },
   "os": [
     "darwin"
   ],

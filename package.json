@@ -5,6 +5,9 @@
   "types": "scripts/index.d.ts",
   "type": "module",
   "license": "MIT",
+  "repository": {
+    "url": "https://github.com/ssttevee/recooler"
+  },
   "devDependencies": {
     "@farmfe/plugin-tools": "^0.1.1",
     "@types/node": "^22.1.0",
