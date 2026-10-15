@@ -1,5 +1,9 @@
 lockfileVersion: '6.0'
 
+settings:
+  autoInstallPeers: true
+  excludeLinksFromLockfile: false
+
 importers:
 
   .:
@@ -42,8 +46,8 @@ importers:
         specifier: ^0.1.10
         version: 0.1.10
       hono:
-        specifier: ^4.5.4
-        version: 4.5.4
+        specifier: ^4.12.34
+        version: 4.12.34
       typescript:
         specifier: ^5.5.4
         version: 5.5.4
@@ -173,9 +177,9 @@ packages:
     dev: false
     optional: true
 
-  /hono@4.5.4:
-    resolution: {integrity: sha512-k2IguJfRgNCpDbAfpxk+o+fZBLFHl4+eIZUpjc1ItZWHeZ37SmT3efA1UpkIaC0hSf1NJg0E79/wWn6g9LQ4Cw==}
-    engines: {node: '>=16.0.0'}
+  /hono@4.12.34:
+    resolution: {integrity: sha512-GqXJqY/xJkJmuloTrnV1ZEXG3fqte+VjkUqoRNZXcrUidiUOP4fMSIHHY4tsqZBK++kVyWmt/AAfSUuy57/eSA==}
+    engines: {node: '>=16.9.0'}
     dev: true
 
   /html-escaper@3.0.3:

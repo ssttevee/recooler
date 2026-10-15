@@ -40,7 +40,7 @@ type FormActionResult =
   | Awaited<import('hono/types').HandlerResponse<any>>
   | Exclude<
       import('easy-jsx-html-engine').Children,
-      Promise<import('easy-jsx-html-engine').Children>
+      PromiseLike<any>
     >
   | void;
 

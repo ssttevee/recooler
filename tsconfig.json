@@ -8,12 +8,9 @@
     "jsx": "react-jsx",
     "jsxImportSource": "easy-jsx-html-engine",
     "declaration": true,
-    "skipLibCheck": true
+    "skipLibCheck": true,
+    "types": ["node", "easy-jsx-html-engine/jsx-runtime"]
   },
   "exclude": ["node_modules"],
-  "include": [
-    "**/*.ts",
-    "global.d.ts",
-    "node_modules/easy-jsx-html-engine/global.d.ts"
-  ]
+  "include": ["**/*.ts", "global.d.ts"]
 }
