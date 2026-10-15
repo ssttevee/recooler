@@ -370,7 +370,25 @@ function LikeButton({ ...otherProps }: OtherProps & { ctx: HonoContext }) {
 }
 ```
 
-NOTE: `ctx` does not need to be destructured or pulled out in any way. The plugin is able to handle getting the path param, regardless of how the props are used, as long as it is passed into the component with the name/attribute `ctx`.
+`ctx` does not need to be destructured or pulled out. The plugin can get the path parameter when the component receives a prop named `ctx`.
+
+You can also supply the context on the same element as the server action. The plugin uses this value instead of the component prop and does not render the `ctx` attribute:
+
+```tsx
+function LikeButton({ requestContext }: { requestContext: HonoContext }) {
+  return (
+    <button
+      ctx={requestContext}
+      hx-get={async () => {
+        await doSomething();
+        return <></>;
+      }}
+    >
+      Like +1
+    </button>
+  );
+}
+```
 
 ## About
 

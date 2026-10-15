@@ -78,6 +78,7 @@ pub(crate) fn transform_module(
     idents: Default::default(),
     new_decls: Default::default(),
     scopes: None,
+    explicit_action_ctx: None,
     comments,
     synthesized_pos_counter: u32::MAX - 1000000,
   };
@@ -208,6 +209,7 @@ struct ComponentTransformVisitor<'a> {
   comments: &'a mut CommentsMetaData,
 
   scopes: Option<Rc<Vec<Rc<HashSet<Atom>>>>>,
+  explicit_action_ctx: Option<Box<Expr>>,
 
   synthesized_pos_counter: u32,
 }
@@ -404,18 +406,27 @@ impl<'a> ComponentTransformVisitor<'a> {
             },
           );
 
-          let mut placeholder_ident = Box::new(Expr::Ident(Ident::new(
-            // this is a placeholder
-            self.atom_store.atom("placeholder"),
-            Take::dummy(),
-          )));
-          if let Some(state) = pathname.replacement_state.map(|p| unsafe { &mut *p }) {
-            state
-              .prop_refs
-              .push(&mut *placeholder_ident.as_mut_ident().unwrap());
+          let ctx_expr = if let Some(explicit_action_ctx) = &self.explicit_action_ctx {
+            explicit_action_ctx.clone()
+          } else {
+            let mut placeholder_ident = Box::new(Expr::Ident(Ident::new(
+              self.atom_store.atom("placeholder"),
+              Take::dummy(),
+            )));
+            if let Some(state) = pathname.replacement_state.map(|p| unsafe { &mut *p }) {
+              state
+                .prop_refs
+                .push(&mut *placeholder_ident.as_mut_ident().unwrap());
 
-            state.used_idents.extend(self.get_all_variables_in_scope());
-          }
+              state.used_idents.extend(self.get_all_variables_in_scope());
+            }
+
+            Box::new(Expr::Member(MemberExpr {
+              obj: placeholder_ident,
+              prop: MemberProp::Ident(Ident::new(self.atom_store.atom("ctx"), Take::dummy())),
+              ..Take::dummy()
+            }))
+          };
 
           tpl.exprs.insert(
             0,
@@ -424,11 +435,7 @@ impl<'a> ComponentTransformVisitor<'a> {
               type_args: None,
               callee: Callee::Expr(Box::new(Expr::Member(MemberExpr {
                 obj: Box::new(Expr::Member(MemberExpr {
-                  obj: Box::new(Expr::Member(MemberExpr {
-                    obj: placeholder_ident,
-                    prop: MemberProp::Ident(Ident::new(self.atom_store.atom("ctx"), Take::dummy())),
-                    ..Take::dummy()
-                  })),
+                  obj: ctx_expr,
                   prop: MemberProp::Ident(Ident::new(self.atom_store.atom("req"), Take::dummy())),
                   ..Take::dummy()
                 })),
@@ -564,6 +571,42 @@ fn grab_idents_from_decls<'a>(
   }
 }
 
+fn form_action_method(name: &str) -> Option<FormActionMethod> {
+  match name {
+    "hx-get" => Some(FormActionMethod::Get),
+    "hx-post" => Some(FormActionMethod::Post),
+    "hx-put" => Some(FormActionMethod::Put),
+    "hx-delete" => Some(FormActionMethod::Delete),
+    "hx-patch" => Some(FormActionMethod::Patch),
+    _ => None,
+  }
+}
+
+fn jsx_attr_name(attr: &JSXAttr) -> Option<&str> {
+  match &attr.name {
+    JSXAttrName::Ident(name) => Some(name.sym.as_str()),
+    JSXAttrName::JSXNamespacedName(_) => None,
+  }
+}
+
+fn jsx_attr_expr(attr: &JSXAttr) -> Option<&Expr> {
+  match &attr.value {
+    Some(JSXAttrValue::JSXExprContainer(JSXExprContainer {
+      expr: JSXExpr::Expr(expr),
+      ..
+    })) => Some(expr),
+    _ => None,
+  }
+}
+
+fn prop_name(prop: &KeyValueProp) -> Option<&str> {
+  match &prop.key {
+    PropName::Ident(name) => Some(name.sym.as_str()),
+    PropName::Str(name) => Some(name.value.as_str()),
+    _ => None,
+  }
+}
+
 impl<'a> VisitMut for ComponentTransformVisitor<'a> {
   fn visit_mut_module(&mut self, module: &mut Module) {
     let mut idents = HashSet::<Atom>::new();
@@ -675,6 +718,82 @@ impl<'a> VisitMut for ComponentTransformVisitor<'a> {
     visit_children_with_scope!(self, block, idents);
   }
 
+  fn visit_mut_jsx_opening_element(&mut self, node: &mut JSXOpeningElement) {
+    let has_action = node.attrs.iter().any(|attr| match attr {
+      JSXAttrOrSpread::JSXAttr(attr) => jsx_attr_name(attr)
+        .and_then(form_action_method)
+        .is_some_and(|_| jsx_attr_expr(attr).is_some_and(is_fn)),
+      JSXAttrOrSpread::SpreadElement(_) => false,
+    });
+
+    if has_action {
+      let explicit_ctx_index = node.attrs.iter().position(|attr| match attr {
+        JSXAttrOrSpread::JSXAttr(attr) => {
+          jsx_attr_name(attr) == Some("ctx") && jsx_attr_expr(attr).is_some()
+        }
+        JSXAttrOrSpread::SpreadElement(_) => false,
+      });
+
+      if let Some(index) = explicit_ctx_index {
+        let JSXAttrOrSpread::JSXAttr(attr) = node.attrs.remove(index) else {
+          unreachable!()
+        };
+        let Some(JSXAttrValue::JSXExprContainer(JSXExprContainer {
+          expr: JSXExpr::Expr(explicit_ctx),
+          ..
+        })) = attr.value
+        else {
+          unreachable!()
+        };
+
+        let previous_ctx = self.explicit_action_ctx.replace(explicit_ctx);
+        node.visit_mut_children_with(self);
+        self.explicit_action_ctx = previous_ctx;
+        return;
+      }
+    }
+
+    node.visit_mut_children_with(self);
+  }
+
+  fn visit_mut_object_lit(&mut self, node: &mut ObjectLit) {
+    let has_action = node.props.iter().any(|prop| match prop {
+      PropOrSpread::Prop(prop) => match prop.as_ref() {
+        Prop::KeyValue(prop) => prop_name(prop)
+          .and_then(form_action_method)
+          .is_some_and(|_| is_fn(&prop.value)),
+        _ => false,
+      },
+      PropOrSpread::Spread(_) => false,
+    });
+
+    if has_action {
+      let explicit_ctx_index = node.props.iter().position(|prop| match prop {
+        PropOrSpread::Prop(prop) => match prop.as_ref() {
+          Prop::KeyValue(prop) => prop_name(prop) == Some("ctx"),
+          _ => false,
+        },
+        PropOrSpread::Spread(_) => false,
+      });
+
+      if let Some(index) = explicit_ctx_index {
+        let PropOrSpread::Prop(prop) = node.props.remove(index) else {
+          unreachable!()
+        };
+        let Prop::KeyValue(prop) = *prop else {
+          unreachable!()
+        };
+
+        let previous_ctx = self.explicit_action_ctx.replace(prop.value);
+        node.visit_mut_children_with(self);
+        self.explicit_action_ctx = previous_ctx;
+        return;
+      }
+    }
+
+    node.visit_mut_children_with(self);
+  }
+
   fn visit_mut_jsx_attr(&mut self, node: &mut JSXAttr) {
     if let Some(JSXAttrValue::JSXExprContainer(JSXExprContainer {
       expr: JSXExpr::Expr(expr),
@@ -694,23 +813,9 @@ impl<'a> VisitMut for ComponentTransformVisitor<'a> {
           return;
         }
 
-        if name.starts_with("hx-") {
-          macro_rules! form_action {
-            ($method:ident) => {
-              if &name[3..]
-                == const_format::map_ascii_case!(const_format::Case::Lower, stringify!($method))
-              {
-                self.add_action(FormActionMethod::$method, expr);
-                return;
-              }
-            };
-          }
-
-          form_action!(Get);
-          form_action!(Post);
-          form_action!(Put);
-          form_action!(Delete);
-          form_action!(Patch);
+        if let Some(method) = form_action_method(&name) {
+          self.add_action(method, expr);
+          return;
         }
       }
     }
@@ -726,27 +831,98 @@ impl<'a> VisitMut for ComponentTransformVisitor<'a> {
         return;
       }
 
-      if key.starts_with("hx-") && is_fn(&*node.value) {
-        macro_rules! form_action {
-          ($method:ident) => {
-            if &key[3..]
-              == const_format::map_ascii_case!(const_format::Case::Lower, stringify!($method))
-            {
-              self.add_action(FormActionMethod::$method, &mut node.value);
-              return;
-            }
-          };
+      if is_fn(&node.value) {
+        if let Some(method) = form_action_method(key) {
+          self.add_action(method, &mut node.value);
+          return;
         }
-
-        form_action!(Get);
-        form_action!(Post);
-        form_action!(Put);
-        form_action!(Delete);
-        form_action!(Patch);
       }
     }
 
     node.visit_mut_children_with(self);
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use std::sync::Arc;
+
+  use farmfe_core::{
+    module::ModuleId,
+    swc_common::SourceMap,
+    swc_ecma_ast::EsVersion,
+    swc_ecma_parser::{Syntax, TsSyntax},
+  };
+  use farmfe_toolkit::script::{codegen_module, parse_module};
+
+  use crate::{ids::GlobalIds, AtomStore};
+
+  use super::transform_module;
+
+  fn transform(source: &str) -> String {
+    let parsed = parse_module(
+      "src/routes/article/[id]/index.tsx",
+      source,
+      Syntax::Typescript(TsSyntax {
+        tsx: true,
+        ..Default::default()
+      }),
+      EsVersion::EsNext,
+    )
+    .unwrap();
+    let mut module = parsed.ast;
+    let mut comments = parsed.comments.into();
+
+    transform_module(
+      &ModuleId::new("src/routes/article/[id]/index.tsx", "", "."),
+      "/article/:id".to_string(),
+      &mut GlobalIds::new(),
+      &mut AtomStore::default(),
+      &mut module,
+      &mut comments,
+    );
+
+    String::from_utf8(
+      codegen_module(
+        &module,
+        EsVersion::EsNext,
+        Arc::new(SourceMap::default()),
+        None,
+        false,
+        None,
+      )
+      .unwrap(),
+    )
+    .unwrap()
+  }
+
+  #[test]
+  fn uses_explicit_action_context() {
+    let result = transform(
+      r#"
+        export default function Component(props) {
+          const requestContext = props.context;
+          return <button hx-post={() => null} ctx={requestContext}>Submit</button>;
+        }
+      "#,
+    );
+
+    assert!(result.contains("requestContext.req.param(\"id\")"));
+    assert!(!result.contains("ctx={requestContext}"));
+    assert!(!result.contains("props.ctx.req.param"));
+  }
+
+  #[test]
+  fn uses_component_context_by_default() {
+    let result = transform(
+      r#"
+        export default function Component(props) {
+          return <button hx-post={() => null}>Submit</button>;
+        }
+      "#,
+    );
+
+    assert!(result.contains("props.ctx.req.param(\"id\")"));
   }
 }
 

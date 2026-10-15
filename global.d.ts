@@ -64,6 +64,10 @@ declare interface EventHandlerFn<
 declare namespace JSX {
   interface HtmlGlobalAttributes {
     /**
+     * supplies the request context used to build a parameterized server action URL
+     */
+    ctx?: HonoContext;
+    /**
      * issues a `GET` to the specified URL
      *
      * @see https://htmx.org/attributes/hx-get/
