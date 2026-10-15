@@ -48,6 +48,7 @@ pub struct RecoolerOptions {
   pub routes_dir: Option<String>,
   pub reuse_modules: Option<bool>,
   pub route_handler_factory: Option<RouteHandlerFactoryInput>,
+  pub action_secret: Option<String>,
 }
 
 struct ModuleSymbol {
@@ -66,6 +67,7 @@ pub struct FarmPluginRecooler {
   scanned_routes: farmfe_core::parking_lot::RwLock<Option<routes::ScanResult>>,
   route_handler_factory: ModuleSymbol,
   reuse_modules: bool,
+  action_secret: Option<String>,
 }
 
 static DEFAULT_ROUTE_HANDLER_IDENT: &str = "jsxRouteHandler";
@@ -97,6 +99,7 @@ impl FarmPluginRecooler {
       scanned_routes: Default::default(),
       scanned_dir: Default::default(),
       reuse_modules: options.reuse_modules.unwrap_or(false),
+      action_secret: options.action_secret.filter(|secret| !secret.is_empty()),
       route_handler_factory: options.route_handler_factory.map_or_else(
         || ModuleSymbol {
           module: "farm-plugin-recooler/helpers".to_string(),
@@ -303,7 +306,8 @@ impl Plugin for FarmPluginRecooler {
       atoms_lock.get_mut(),
       &mut script.ast,
       &mut script.comments,
-    );
+    )
+    .map_err(CompilationError::GenericError)?;
 
     Ok(Some(()))
   }
@@ -479,6 +483,15 @@ impl FarmPluginRecooler {
     let mut import_idents = UniqueImportIdentifiers::new();
     let mut after_imports = String::new();
 
+    if let Some(secret) = &self.action_secret {
+      // only inlined into the server entrypoint, never the client scripts
+      after_imports += format!(
+        "configureActions({{ secret: {} }});\n",
+        serde_json::to_string(secret).unwrap()
+      )
+      .as_str();
+    }
+
     let mut handlers = String::new();
     let (root_hoc_ident, root_action_methods): (String, HashSet<FormActionMethod>) = if scan_result
       .routes
@@ -548,7 +561,7 @@ impl FarmPluginRecooler {
       format!(
         r#"
         import {{ Hono }} from "hono";
-        import {{ actionsMiddleware, buildHeadFn, makeCloudflarePagesHandler }} from "farm-plugin-recooler/helpers";
+        import {{ actionsMiddleware, buildHeadFn, configureActions, makeCloudflarePagesHandler }} from "farm-plugin-recooler/helpers";
         import {} from {};
         {}
 

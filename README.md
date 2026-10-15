@@ -225,9 +225,49 @@ return (
 
 NOTE: Routes with path parameters must have `ctx` available as a prop. See [gotchas and workarounds](#form-actions-in-parameterized-routes).
 
+#### Captured variables
+
+Form actions are hoisted out of the component and run in a separate request, so variables from the enclosing component are captured when the page is rendered and sent back with the action request.
+
+```tsx
+export default function TodoList({ todos }: { todos: Todo[] }) {
+  return todos.map((todo) => (
+    <button
+      hx-delete={async (ctx: HonoContext) => {
+        await deleteTodo(ctx, todo.id);
+        return <></>;
+      }}
+    >
+      delete {todo.title}
+    </button>
+  ));
+}
+```
+
+- Only values that can round trip through JSON may be captured: strings, finite numbers, booleans, `null`, arrays and plain objects. Capturing anything else, such as a `Date`, a class instance or the hono context, throws when the page is rendered. Capture the specific values instead, e.g. `const id = props.ctx.req.param("id")` rather than `props`.
+- Local functions and classes cannot be captured and fail the build. Move them to the module scope, where they can be referenced freely.
+- Module level variables and imports are not captured since the action stays in the same module.
+- Captured values are a copy: reassigning them inside the action does not affect the component.
+
+Captured values are part of the action url, so they are visible to the client. They can also be modified by the client unless an `action_secret` is configured, in which case they are signed and requests with a missing or invalid signature are rejected with a 403.
+
+```ts
+// farm.config.ts
+import { defineConfig } from "@farmfe/core";
+import recooler from "farm-plugin-recooler";
+
+export default defineConfig({
+  plugins: [recooler({ action_secret: process.env.RECOOLER_ACTION_SECRET })],
+});
+```
+
+The secret is inlined into the generated server entrypoint, so treat the build output as sensitive.
+
 ### Event Handlers
 
 Any `hx-on:{event}` attributes with function values will be extracted and bundled into a specialized client script for each page. Just like form actions, this works for all components within the configured source directory (which is `src` by default), including layouts and the root component. These function can be expected to run on the client, as if simply added with `elem.addEventListener("event", fn)`. It does not have access to the hono context because it is executed on the client side, but it does have access to the element that triggered the event, as well as the event itself.
+
+Variables from the enclosing component are captured in the same way as [form actions](#captured-variables), except that they are embedded in the page instead of an action url, and are never signed.
 
 ```ts
 declare interface EventHandlerFn<TElement extends Element = any, TEvent extends  Event = any> {
@@ -341,7 +381,9 @@ Here is a running list of rough edges that you may encounter and how they can be
 TypeError: Cannot read properties of undefined (reading 'req')
 ```
 
-For pages with a parameterized route (i.e. `/article/[id]/index.tsx`), there needs a way to get the path parameter value to get the actual path. As such, the plugin assumes that the component containing the form action function to have `ctx` passed in with the props. This assumption is made because it is true for the page component, which makes it very easy for simple apps.
+For pages with a parameterized route (i.e. `/article/[id]/index.tsx`), there needs a way to get the path parameter value to get the actual path. As such, the plugin assumes that the component containing the form action function to have `ctx` passed in with the props. This assumption is made because it is true for the page component, which makes it very easy for simple apps. If the outermost function in the module has no params, the build fails instead.
+
+Form actions nested inside another form action's returned JSX use the outer action's `ctx` param instead.
 
 ```tsx
 // /article/[id]/index.tsx

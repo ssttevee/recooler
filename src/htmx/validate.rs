@@ -11,10 +11,28 @@ use crate::es_ast_helpers::is_fn;
 use super::{FormActionMethod, LocalHandlerIdentGenerator, ACTION_DECL_PREFIX, EVENT_DECL_PREFIX};
 
 lazy_static! {
-  static ref ACTION_REPLACEMENT_STRING_PATTERN: Regex =
-    Regex::new("\\?action=(.+)&scope=$").unwrap();
+  static ref ACTION_REPLACEMENT_STRING_PATTERN: Regex = Regex::new("\\?action=([^&]+)$").unwrap();
   static ref HANDLER_REPLACEMENT_STRING_PATTERN: Regex =
     Regex::new("^\\$handlers\\[(\".+\")\\]\\.call\\(this, event\\)$").unwrap();
+  static ref SCOPED_HANDLER_REPLACEMENT_PREFIX_PATTERN: Regex =
+    Regex::new("^\\$handlers\\[(\".+\")\\]\\($").unwrap();
+}
+
+/// Returns the json encoded id of a transformed event handler, or `None` if the value was not
+/// transformed (i.e. a plain string handler).
+fn transformed_event_handler_id(value: &Expr) -> Option<&str> {
+  let (pattern, s) = match value {
+    Expr::Lit(Lit::Str(lit)) => (&*HANDLER_REPLACEMENT_STRING_PATTERN, lit.value.as_str()),
+    Expr::Tpl(tpl) => (
+      &*SCOPED_HANDLER_REPLACEMENT_PREFIX_PATTERN,
+      tpl.quasis[0].cooked.as_ref()?.as_str(),
+    ),
+    _ => return None,
+  };
+
+  pattern
+    .captures(s)
+    .map(|captures| captures.get(1).unwrap().as_str())
 }
 
 struct ComponentHandlerValidationVisitor<'a> {
@@ -91,7 +109,13 @@ impl<'a> ComponentHandlerValidationVisitor<'a> {
     }
 
     if let Expr::Tpl(tpl) = node.value.as_ref() {
-      let s = tpl.quasis[0].raw.as_str();
+      // the action id ends the quasi before the optional captured scope expression
+      let s = tpl
+        .quasis
+        .iter()
+        .map(|quasi| quasi.raw.as_str())
+        .find(|raw| ACTION_REPLACEMENT_STRING_PATTERN.is_match(raw))
+        .unwrap_or_default();
       if let Some(captures) = ACTION_REPLACEMENT_STRING_PATTERN.captures(s) {
         let (_, [expected_form_action_id_urlencoded]) = captures.extract();
         if let Ok(expected_form_action_id) = urlencoding::decode(expected_form_action_id_urlencoded)
@@ -134,30 +158,24 @@ impl<'a> ComponentHandlerValidationVisitor<'a> {
       .event_handler_ids
       .generate_id(self.module_id, &export_name);
 
-    if let Expr::Lit(Lit::Str(lit)) = node.value.as_ref() {
-      let s = lit.value.as_str();
-      if let Some(captures) = HANDLER_REPLACEMENT_STRING_PATTERN.captures(s) {
-        let (_, [expected_event_handler_id_json]) = captures.extract();
-        if let Ok(expected_event_handler_id) =
-          serde_json::from_str::<String>(expected_event_handler_id_json)
-        {
-          if event_handler_id != expected_event_handler_id {
-            panic!(
-              "unexpected event handler id: expected {}, but found {} ({})",
-              expected_event_handler_id, event_handler_id, expected_event_handler_id_json,
-            );
-          }
-        } else {
-          panic!(
-            "unexpected event handler id json: {}",
-            expected_event_handler_id_json
-          );
-        }
-      } else {
-        panic!("unexpected event handler string pattern: {}", s);
-      };
+    let Some(expected_event_handler_id_json) = transformed_event_handler_id(&node.value) else {
+      panic!("unexpected event handler value");
+    };
+
+    if let Ok(expected_event_handler_id) =
+      serde_json::from_str::<String>(expected_event_handler_id_json)
+    {
+      if event_handler_id != expected_event_handler_id {
+        panic!(
+          "unexpected event handler id: expected {}, but found {} ({})",
+          expected_event_handler_id, event_handler_id, expected_event_handler_id_json,
+        );
+      }
     } else {
-      panic!("unexpected event handler value type");
+      panic!(
+        "unexpected event handler id json: {}",
+        expected_event_handler_id_json
+      );
     }
 
     // println!(
@@ -178,7 +196,10 @@ impl<'a> Visit for ComponentHandlerValidationVisitor<'a> {
 
     let key = node.key.as_str().unwrap().value.as_str();
     if key.starts_with("hx-on:") || key.starts_with("hx-on-") {
-      self.validate_event_handler(node);
+      // plain string handlers are left untransformed
+      if transformed_event_handler_id(&node.value).is_some() {
+        self.validate_event_handler(node);
+      }
       return;
     }
 
