@@ -74,7 +74,9 @@ impl UniqueImportIdentifiers {
     let cwd_str = cwd.to_str().unwrap();
     let mut out = String::new();
     for module in modules {
-      for (export_name, ident) in self.exports.get(module).unwrap() {
+      let mut exports = self.exports.get(module).unwrap().iter().collect::<Vec<_>>();
+      exports.sort();
+      for (export_name, ident) in exports {
         out += format!(
           "import {{ {} as {} }} from {};\n",
           export_name,

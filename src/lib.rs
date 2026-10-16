@@ -68,6 +68,9 @@ pub struct FarmPluginRecooler {
   route_handler_factory: ModuleSymbol,
   reuse_modules: bool,
   action_secret: Option<String>,
+  /// compiled client scripts keyed by their generated entry source, so that
+  /// routes with identical client entries are only compiled once per build
+  client_script_cache: Mutex<HashMap<String, String>>,
 }
 
 static DEFAULT_ROUTE_HANDLER_IDENT: &str = "jsxRouteHandler";
@@ -100,6 +103,7 @@ impl FarmPluginRecooler {
       scanned_dir: Default::default(),
       reuse_modules: options.reuse_modules.unwrap_or(false),
       action_secret: options.action_secret.filter(|secret| !secret.is_empty()),
+      client_script_cache: Default::default(),
       route_handler_factory: options.route_handler_factory.map_or_else(
         || ModuleSymbol {
           module: "farm-plugin-recooler/helpers".to_string(),
@@ -361,6 +365,36 @@ impl FarmPluginRecooler {
       return Ok(None);
     }
 
+    let entry_source =
+      self.generate_client_entrypoint(context, &module_id.relative_path().to_string())?;
+
+    // the lock must not be held across the nested compile, which calls back
+    // into this plugin instance
+    let cached = self
+      .client_script_cache
+      .lock()
+      .unwrap()
+      .get(&entry_source)
+      .cloned();
+    if let Some(client_script) = cached {
+      return Ok(Some(client_script));
+    }
+
+    let client_script = self.compile_client_script(context, module_id)?;
+    self
+      .client_script_cache
+      .lock()
+      .unwrap()
+      .insert(entry_source, client_script.clone());
+
+    Ok(Some(client_script))
+  }
+
+  fn compile_client_script(
+    &self,
+    context: &Arc<CompilationContext>,
+    module_id: &ModuleId,
+  ) -> Result<String> {
     let mut config = context.config.as_ref().clone();
     config.progress = false;
     *config.tree_shaking = BoolOrObj::Bool(true);
@@ -380,9 +414,7 @@ impl FarmPluginRecooler {
     compiler.compile()?;
 
     let resource_map = compiler.context().resources_map.lock();
-    Ok(Some(
-      String::from_utf8(resource_map.get("client.js").unwrap().bytes.clone()).unwrap(),
-    ))
+    Ok(String::from_utf8(resource_map.get("client.js").unwrap().bytes.clone()).unwrap())
   }
 
   fn generate_metadata_module(&self) -> Result<String> {
@@ -437,8 +469,12 @@ impl FarmPluginRecooler {
 
     let mut import_idents = UniqueImportIdentifiers::new();
 
+    // sorted so that the generated source (and therefore the output) is deterministic
+    let mut handler_ids = page_info.handlers.event_handlers.iter().collect::<Vec<_>>();
+    handler_ids.sort();
+
     let mut handlers = String::new();
-    for handler_id in &page_info.handlers.event_handlers {
+    for handler_id in handler_ids {
       let lock = self.ids.lock().unwrap();
       let ids = lock.borrow();
       if let Some(export) = ids.event_handler_ids.id_export(handler_id) {
@@ -479,6 +515,9 @@ impl FarmPluginRecooler {
     _hook_context: &PluginHookContext,
   ) -> Result<String> {
     let scan_result = self.scan_routes(context)?;
+
+    // scripts from a previous build in this process (e.g. watch mode) may be stale
+    self.client_script_cache.lock().unwrap().clear();
 
     let mut import_idents = UniqueImportIdentifiers::new();
     let mut after_imports = String::new();
