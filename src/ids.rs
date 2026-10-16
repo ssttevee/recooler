@@ -72,6 +72,39 @@ impl GlobalIdGenerator {
   }
 }
 
+#[cfg(test)]
+impl GlobalIdGenerator {
+  /// Returns every `(module id, export name, id)`, sorted, after checking that both maps agree.
+  pub(crate) fn entries(&self) -> Vec<(String, String, String)> {
+    let mut entries = self
+      .module_name_id_map
+      .iter()
+      .flat_map(|(module_id, name_id_map)| {
+        name_id_map
+          .iter()
+          .map(|(export_name, id)| (module_id.to_string(), export_name.clone(), id.clone()))
+      })
+      .collect::<Vec<_>>();
+    entries.sort();
+
+    let mut reverse_entries = self
+      .id_module_map
+      .iter()
+      .map(|(id, export)| {
+        (
+          export.module_id.to_string(),
+          export.export_name.clone(),
+          id.clone(),
+        )
+      })
+      .collect::<Vec<_>>();
+    reverse_entries.sort();
+    assert_eq!(entries, reverse_entries);
+
+    entries
+  }
+}
+
 impl GlobalIdGenerator {
   pub(crate) fn new() -> Self {
     Self {

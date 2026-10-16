@@ -1903,42 +1903,6 @@ mod tests {
   }
 
   #[test]
-  fn validates_transformed_object_props() {
-    use farmfe_core::swc_common::{Globals, GLOBALS};
-
-    GLOBALS.set(&Globals::new(), || {
-      let parsed = parse_module(
-        "src/routes/x/index.tsx",
-        r#"
-          export default function C({ n }) {
-            return h("button", { "hx-post": () => n, "hx-on:click": () => alert(n) });
-          }
-        "#,
-        Syntax::Typescript(Default::default()),
-        EsVersion::EsNext,
-      )
-      .unwrap();
-      let mut module = parsed.ast;
-      let mut comments = parsed.comments.into();
-      module.visit_mut_with(&mut resolver(Mark::new(), Mark::new(), true));
-
-      let module_id = ModuleId::new("src/routes/x/index.tsx", "", ".");
-      transform_module(
-        &module_id,
-        "/x".to_string(),
-        &mut GlobalIds::new(),
-        &mut AtomStore::default(),
-        &mut module,
-        &mut comments,
-      )
-      .unwrap();
-
-      // panics if the transformed module does not match the expected ids
-      crate::htmx::validate::ensure_registered_handlers(&module_id, &mut GlobalIds::new(), &module);
-    });
-  }
-
-  #[test]
   fn slices_handler_helpers_and_drops_server_code() {
     let result = slice(
       r#"

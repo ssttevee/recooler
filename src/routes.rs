@@ -7,7 +7,7 @@ use std::{
 
 use farmfe_compiler::{trace_module_graph::TracedModuleGraph, Compiler};
 use farmfe_core::{
-  config::persistent_cache::PersistentCacheConfig,
+  config::{persistent_cache::PersistentCacheConfig, Config},
   context::CompilationContext,
   error::{CompilationError, Result},
   module::{
@@ -646,12 +646,39 @@ impl Plugin for TraceStubPlugin {
 }
 
 impl FarmPluginRecooler {
+  /// Returns the persistent cache config of the route scan's trace compile. Its modules may be
+  /// stubbed (see [`is_trace_stubbed`]), so they are cached in a namespace of their own that is
+  /// never shared with the other compiles. Modules are looked up in the cache by timestamp before
+  /// they are loaded, i.e. before it is decided whether to stub them, so the namespace also depends
+  /// on the options that decide it and that `process_module` depends on.
+  fn trace_persistent_cache_config(&self, config: &Config) -> PersistentCacheConfig {
+    // reused modules are copied into the main module graph, which only works for modules that are
+    // built by the trace itself
+    if self.reuse_modules || !config.persistent_cache.enabled() {
+      return PersistentCacheConfig::Bool(false);
+    }
+
+    let mut cache_config = match config.persistent_cache.as_ref() {
+      PersistentCacheConfig::Obj(obj) => obj.clone(),
+      PersistentCacheConfig::Bool(_) => config.persistent_cache.as_obj(&config.root),
+    };
+    let options_hash = farmfe_toolkit::hash::sha256(
+      serde_json::to_string(&(&self.src_dir, &self.routes_dir))
+        .unwrap()
+        .as_bytes(),
+      8,
+    );
+    cache_config.namespace = format!("{}-recooler-trace-{}", cache_config.namespace, options_hash);
+
+    PersistentCacheConfig::Obj(cache_config)
+  }
+
   fn list_dependencies_for_module(
     &self,
     traced_graph: &TracedModuleGraph,
     module_graph: &ModuleGraph,
     source: &String,
-  ) -> Vec<Module> {
+  ) -> Result<Vec<Module>> {
     let mut modules_queue = VecDeque::<String>::new();
     modules_queue.push_back(
       PathBuf::from(source)
@@ -680,12 +707,13 @@ impl FarmPluginRecooler {
 
       let module_id = ModuleId::from(module_id);
 
-      // TODO: ensure module form actions and event handlers are properly registered
       if let Some(module) = module_graph.module(&module_id) {
         // println!("module decls {}", module.meta.as_script().ast.body.len());
         if let ModuleMetaData::Script(script) = module.meta.as_ref() {
+          // modules from the persistent cache were not transformed by `process_module`
           let mut ids = self.ids.lock().unwrap();
-          crate::htmx::validate::ensure_registered_handlers(&module_id, ids.get_mut(), &script.ast);
+          crate::htmx::validate::ensure_registered_handlers(&module_id, ids.get_mut(), &script.ast)
+            .map_err(CompilationError::GenericError)?;
 
           deps.push(module.clone());
         }
@@ -697,7 +725,7 @@ impl FarmPluginRecooler {
       }
     }
 
-    deps
+    Ok(deps)
   }
 
   fn get_modules_dependencies(
@@ -725,7 +753,7 @@ impl FarmPluginRecooler {
         .unwrap()?
         .into_iter(),
     );
-    config.persistent_cache = Box::new(PersistentCacheConfig::Bool(false));
+    config.persistent_cache = Box::new(self.trace_persistent_cache_config(&config));
     let canonical_path_map = config.input.clone();
 
     let mut plugins = context.plugin_driver.plugins.clone();
@@ -748,6 +776,10 @@ impl FarmPluginRecooler {
     // }
 
     let traced_module = compiler.trace_module_graph()?;
+    // unlike `compile`, tracing doesn't write the cache
+    if compiler.context().config.persistent_cache.enabled() {
+      compiler.context().cache_manager.write_cache();
+    }
 
     if self.reuse_modules {
       let mut module_graph = context.module_graph.write();
@@ -763,17 +795,18 @@ impl FarmPluginRecooler {
     let module_graph_rg = compiler.context().module_graph.read();
     let module_graph = &*module_graph_rg;
 
-    Ok(HashMap::from_iter(source_paths.into_iter().map(|sp| {
-      let s = sp.to_str().unwrap().to_string();
-      (
-        sp.clone(),
-        self.list_dependencies_for_module(
+    source_paths
+      .into_iter()
+      .map(|sp| {
+        let s = sp.to_str().unwrap().to_string();
+        let deps = self.list_dependencies_for_module(
           &traced_module,
           module_graph,
           canonical_path_map.get(&s).unwrap(),
-        ),
-      )
-    })))
+        )?;
+        Ok((sp, deps))
+      })
+      .collect()
   }
 }
 

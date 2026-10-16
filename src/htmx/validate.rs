@@ -1,225 +1,443 @@
-use std::collections::HashSet;
+use farmfe_core::{module::ModuleId, swc_ecma_ast::*};
 
-use farmfe_core::{module::ModuleId, regex::Regex, serde_json, swc_ecma_ast::*};
-use farmfe_toolkit::{
-  lazy_static::lazy_static,
-  swc_ecma_visit::{Visit, VisitWith},
-};
+use super::{parse_handler_ident, HandlerIdent};
 
-use crate::es_ast_helpers::is_fn;
-
-use super::{FormActionMethod, LocalHandlerIdentGenerator, ACTION_DECL_PREFIX, EVENT_DECL_PREFIX};
-
-lazy_static! {
-  static ref ACTION_REPLACEMENT_STRING_PATTERN: Regex = Regex::new("\\?action=([^&]+)$").unwrap();
-  static ref HANDLER_REPLACEMENT_STRING_PATTERN: Regex =
-    Regex::new("^\\$handlers\\[(\".+\")\\]\\.call\\(this, event\\)$").unwrap();
-  static ref SCOPED_HANDLER_REPLACEMENT_PREFIX_PATTERN: Regex =
-    Regex::new("^\\$handlers\\[(\".+\")\\]\\($").unwrap();
-}
-
-/// Returns the json encoded id of a transformed event handler, or `None` if the value was not
-/// transformed (i.e. a plain string handler).
-fn transformed_event_handler_id(value: &Expr) -> Option<&str> {
-  let (pattern, s) = match value {
-    Expr::Lit(Lit::Str(lit)) => (&*HANDLER_REPLACEMENT_STRING_PATTERN, lit.value.as_str()),
-    Expr::Tpl(tpl) => (
-      &*SCOPED_HANDLER_REPLACEMENT_PREFIX_PATTERN,
-      tpl.quasis[0].cooked.as_ref()?.as_str(),
-    ),
-    _ => return None,
-  };
-
-  pattern
-    .captures(s)
-    .map(|captures| captures.get(1).unwrap().as_str())
-}
-
-struct ComponentHandlerValidationVisitor<'a> {
-  module_id: &'a ModuleId,
-  global_ids: &'a mut crate::GlobalIds,
-  local_idents: LocalHandlerIdentGenerator,
-  exported_handlers: HashSet<String>,
-}
-
-/// Ensure that all event handlers are registered.
+/// Registers the form actions and event handlers of a module that was transformed by
+/// [`super::transform::transform_module`] in an earlier build, i.e. one that was loaded from the
+/// persistent cache so that `process_module` was skipped, exactly like the transform did.
+///
+/// The ids are derived from the names of the exports that the transform appends, which encode the
+/// method and the value of the module local counter that the transform numbered the ids with. The
+/// names are module level bindings, so unlike the ids embedded in the transformed handlers they
+/// survive the other plugins (e.g. the jsx transform) unchanged. Registering a module that already
+/// is registered does nothing.
 pub(crate) fn ensure_registered_handlers(
   module_id: &ModuleId,
   global_ids: &mut crate::GlobalIds,
-  swc_module: &farmfe_core::swc_ecma_ast::Module,
-) {
-  let mut exported_handlers = HashSet::<String>::new();
+  swc_module: &Module,
+) -> Result<(), String> {
+  let mut actions = vec![];
+  let mut events = vec![];
   for item in &swc_module.body {
-    if let ModuleItem::ModuleDecl(decl) = item {
-      if let ModuleDecl::ExportDecl(export_decl) = decl {
-        if let Decl::Var(var_decl) = &export_decl.decl {
-          if var_decl.kind == VarDeclKind::Const && var_decl.decls.len() == 1 {
-            if let Pat::Ident(ident) = &var_decl.decls[0].name {
-              let name = ident.id.sym.to_string();
-              if name.starts_with(ACTION_DECL_PREFIX) || name.starts_with(EVENT_DECL_PREFIX) {
-                exported_handlers.insert(name);
-              }
-            }
-          }
-        }
-      }
-    }
-  }
-
-  let mut visitor = ComponentHandlerValidationVisitor {
-    module_id,
-    global_ids,
-    local_idents: Default::default(),
-    exported_handlers,
-  };
-
-  swc_module.visit_with(&mut visitor);
-}
-
-impl<'a> ComponentHandlerValidationVisitor<'a> {
-  fn validate_form_action(&mut self, method: FormActionMethod, node: &KeyValueProp) {
-    let export_name = self.local_idents.next_action_ident(method);
-    if !self.exported_handlers.contains(&export_name) {
-      panic!(
-        "unmatched form action export name in module {}: {}",
-        self.module_id.relative_path(),
-        export_name
-      );
-    }
-
-    let form_action_id = self
-      .global_ids
-      .form_action_ids
-      .generate_id(self.module_id, &export_name);
-
-    if let Some(existing_method) = self.global_ids.action_method_map.get(&form_action_id) {
-      std::assert!(*existing_method == method);
-    } else {
-      // println!(
-      //   "adding into action_method_map: {} {:?} {}",
-      //   &form_action_id,
-      //   method,
-      //   self.module_id.relative_path()
-      // );
-
-      self
-        .global_ids
-        .action_method_map
-        .insert(form_action_id.clone(), method);
-    }
-
-    if let Expr::Tpl(tpl) = node.value.as_ref() {
-      // the action id ends the quasi before the optional captured scope expression
-      let s = tpl
-        .quasis
-        .iter()
-        .map(|quasi| quasi.raw.as_str())
-        .find(|raw| ACTION_REPLACEMENT_STRING_PATTERN.is_match(raw))
-        .unwrap_or_default();
-      if let Some(captures) = ACTION_REPLACEMENT_STRING_PATTERN.captures(s) {
-        let (_, [expected_form_action_id_urlencoded]) = captures.extract();
-        if let Ok(expected_form_action_id) = urlencoding::decode(expected_form_action_id_urlencoded)
-        {
-          if form_action_id != expected_form_action_id {
-            panic!(
-              "unexpected form action id: expected {}, but found {}",
-              expected_form_action_id, form_action_id,
-            );
-          }
-        } else {
-          panic!("unexpected form action id urlencoded: {}", s);
-        }
-      } else {
-        panic!("unexpected form action string pattern: {}", s);
-      }
-    } else {
-      panic!("unexpected form action value type");
-    }
-
-    // println!(
-    //   "validated form action {} {} {}",
-    //   self.module_id.relative_path(),
-    //   export_name,
-    //   form_action_id
-    // );
-  }
-
-  fn validate_event_handler(&mut self, node: &KeyValueProp) {
-    let export_name = self.local_idents.next_event_ident();
-    if !self.exported_handlers.contains(&export_name) {
-      panic!(
-        "unmatched event handler export name in module: {}",
-        export_name
-      );
-    }
-
-    let event_handler_id = self
-      .global_ids
-      .event_handler_ids
-      .generate_id(self.module_id, &export_name);
-
-    let Some(expected_event_handler_id_json) = transformed_event_handler_id(&node.value) else {
-      panic!("unexpected event handler value");
+    let ModuleItem::ModuleDecl(ModuleDecl::ExportDecl(ExportDecl {
+      decl: Decl::Var(var_decl),
+      ..
+    })) = item
+    else {
+      continue;
     };
 
-    if let Ok(expected_event_handler_id) =
-      serde_json::from_str::<String>(expected_event_handler_id_json)
-    {
-      if event_handler_id != expected_event_handler_id {
-        panic!(
-          "unexpected event handler id: expected {}, but found {} ({})",
-          expected_event_handler_id, event_handler_id, expected_event_handler_id_json,
-        );
+    for decl in &var_decl.decls {
+      let Pat::Ident(ident) = &decl.name else {
+        continue;
+      };
+
+      let name = ident.id.sym.to_string();
+      match parse_handler_ident(&name) {
+        Some(HandlerIdent::Action(method, index)) => actions.push((index, method, name)),
+        Some(HandlerIdent::Event(index)) => events.push((index, name)),
+        None => {}
+      }
+    }
+  }
+
+  // the ids must be generated in the order of the counter, which is not the order of the exports
+  // because nested actions are exported before the action containing them
+  actions.sort();
+  events.sort();
+
+  // without gaps, the id of each export is numbered with its counter value like in the transform
+  if !actions
+    .iter()
+    .enumerate()
+    .all(|(i, (index, ..))| i == *index)
+    || !events.iter().enumerate().all(|(i, (index, _))| i == *index)
+  {
+    return Err(format!(
+      "unexpected form action or event handler exports in module {}: {}",
+      module_id.relative_path(),
+      actions
+        .iter()
+        .map(|(.., name)| name)
+        .chain(events.iter().map(|(_, name)| name))
+        .cloned()
+        .collect::<Vec<_>>()
+        .join(", ")
+    ));
+  }
+
+  for (_, method, export_name) in actions {
+    let form_action_id = global_ids
+      .form_action_ids
+      .generate_id(module_id, &export_name);
+
+    if let Some(existing_method) = global_ids.action_method_map.get(&form_action_id) {
+      if *existing_method != method {
+        return Err(format!(
+          "form action {} is registered as {:?}, but exported as {:?}",
+          form_action_id, existing_method, method
+        ));
       }
     } else {
-      panic!(
-        "unexpected event handler id json: {}",
-        expected_event_handler_id_json
-      );
+      global_ids.action_method_map.insert(form_action_id, method);
     }
-
-    // println!(
-    //   "validated event handler {} {} {}",
-    //   self.module_id.relative_path(),
-    //   export_name,
-    //   event_handler_id
-    // );
   }
+
+  for (_, export_name) in events {
+    global_ids
+      .event_handler_ids
+      .generate_id(module_id, &export_name);
+  }
+
+  Ok(())
 }
 
-impl<'a> Visit for ComponentHandlerValidationVisitor<'a> {
-  fn visit_key_value_prop(&mut self, node: &KeyValueProp) {
-    // println!("called visit_mut_key_value_prop {:?}", node.key);
-    if !node.key.is_str() {
-      return;
-    }
+#[cfg(test)]
+mod tests {
+  use std::sync::Arc;
 
-    let key = node.key.as_str().unwrap().value.as_str();
-    if key.starts_with("hx-on:") || key.starts_with("hx-on-") {
-      // plain string handlers are left untransformed
-      if transformed_event_handler_id(&node.value).is_some() {
-        self.validate_event_handler(node);
-      }
-      return;
-    }
+  use farmfe_core::{
+    module::ModuleId,
+    swc_common::{comments::SingleThreadedComments, Globals, Mark, SourceMap, GLOBALS},
+    swc_ecma_ast::{EsVersion, Module},
+    swc_ecma_parser::{Syntax, TsSyntax},
+  };
+  use farmfe_toolkit::{
+    script::parse_module,
+    swc_ecma_transforms::{react, resolver},
+    swc_ecma_visit::VisitMutWith,
+  };
 
-    if key.starts_with("hx-") && is_fn(&*node.value) {
-      macro_rules! form_action {
-        ($method:ident) => {
-          if &key[3..]
-            == const_format::map_ascii_case!(const_format::Case::Lower, stringify!($method))
-          {
-            self.validate_form_action(FormActionMethod::$method, node);
-            return;
-          }
+  use crate::{
+    htmx::{transform::transform_module, FormActionMethod},
+    ids::GlobalIds,
+    AtomStore,
+  };
+
+  use super::ensure_registered_handlers;
+
+  #[derive(Debug, PartialEq)]
+  struct Registry {
+    form_action_ids: Vec<(String, String, String)>,
+    action_method_map: Vec<(String, FormActionMethod)>,
+    event_handler_ids: Vec<(String, String, String)>,
+  }
+
+  fn registry(ids: &GlobalIds) -> Registry {
+    let mut action_method_map = ids
+      .action_method_map
+      .iter()
+      .map(|(id, method)| (id.clone(), *method))
+      .collect::<Vec<_>>();
+    action_method_map.sort();
+
+    Registry {
+      form_action_ids: ids.form_action_ids.entries(),
+      action_method_map,
+      event_handler_ids: ids.event_handler_ids.entries(),
+    }
+  }
+
+  #[derive(Clone, Copy)]
+  enum Jsx {
+    /// the source is not jsx, or the jsx is left as is
+    None,
+    /// the jsx transform runs after the recooler transform, like in farm
+    After,
+    /// the jsx transform runs before the recooler transform
+    Before,
+  }
+
+  /// Parses the `(path, route pathname, source)` modules like farm and transforms them into one
+  /// registry, then replays the transformed modules into a fresh registry and into the same one.
+  /// Returns the registry of the transform after asserting that the replays match it.
+  fn assert_replay_matches(modules: &[(&str, &str, &str)], jsx: Jsx) -> Registry {
+    GLOBALS.set(&Globals::new(), || {
+      let mut global_ids = GlobalIds::new();
+      let mut transformed = Vec::<(ModuleId, Module)>::new();
+      for (path, route, source) in modules {
+        let parsed = parse_module(
+          path,
+          source,
+          Syntax::Typescript(TsSyntax {
+            tsx: true,
+            ..Default::default()
+          }),
+          EsVersion::EsNext,
+        )
+        .unwrap();
+        let mut module = parsed.ast;
+        let mut comments = parsed.comments.into();
+
+        let unresolved_mark = Mark::new();
+        let top_level_mark = Mark::new();
+        module.visit_mut_with(&mut resolver(unresolved_mark, top_level_mark, true));
+
+        let jsx_transform = |module: &mut Module| {
+          module.visit_mut_with(&mut react::react::<SingleThreadedComments>(
+            Arc::new(SourceMap::default()),
+            None,
+            react::Options {
+              runtime: Some(react::Runtime::Automatic),
+              import_source: Some("easy-jsx-html-engine".to_string()),
+              throw_if_namespace: Some(false),
+              development: Some(false),
+              ..Default::default()
+            },
+            top_level_mark,
+            unresolved_mark,
+          ));
         };
+
+        if let Jsx::Before = jsx {
+          jsx_transform(&mut module);
+        }
+
+        let module_id = ModuleId::new(path, "", ".");
+        transform_module(
+          &module_id,
+          route.to_string(),
+          &mut global_ids,
+          &mut AtomStore::default(),
+          &mut module,
+          &mut comments,
+        )
+        .unwrap();
+
+        if let Jsx::After = jsx {
+          jsx_transform(&mut module);
+        }
+
+        transformed.push((module_id, module));
       }
 
-      form_action!(Get);
-      form_action!(Post);
-      form_action!(Put);
-      form_action!(Delete);
-      form_action!(Patch);
-    }
+      let expected = registry(&global_ids);
+
+      let mut replayed_ids = GlobalIds::new();
+      for (module_id, module) in &transformed {
+        ensure_registered_handlers(module_id, &mut replayed_ids, module).unwrap();
+      }
+      assert_eq!(registry(&replayed_ids), expected);
+
+      // modules that were transformed in this build are replayed too
+      for (module_id, module) in &transformed {
+        ensure_registered_handlers(module_id, &mut global_ids, module).unwrap();
+      }
+      assert_eq!(registry(&global_ids), expected);
+
+      expected
+    })
+  }
+
+  fn assert_replay_matches_with_jsx(modules: &[(&str, &str, &str)]) -> Registry {
+    let expected = assert_replay_matches(modules, Jsx::None);
+    assert_eq!(assert_replay_matches(modules, Jsx::After), expected);
+    assert_eq!(assert_replay_matches(modules, Jsx::Before), expected);
+    expected
+  }
+
+  fn ids(entries: &[(String, String, String)]) -> Vec<(&str, &str)> {
+    entries
+      .iter()
+      .map(|(_, export_name, id)| (export_name.as_str(), id.as_str()))
+      .collect()
+  }
+
+  #[test]
+  fn replays_event_handlers_nested_in_children() {
+    let registry = assert_replay_matches_with_jsx(&[(
+      "src/components/List.tsx",
+      "",
+      r#"
+        import { helper } from "./helper";
+
+        export default function List(props) {
+          const count = props.count;
+          return (
+            <div>
+              <section>
+                <ul>
+                  {props.items.map((item) => (
+                    <li>
+                      <button hx-on:click={() => helper(item)}>{item}</button>
+                      <span hx-on-mouseover={function () { console.log(count); }} />
+                    </li>
+                  ))}
+                </ul>
+                <a hx-on:click="plain()" />
+                <i hx-on--after-request={() => helper()} />
+              </section>
+            </div>
+          );
+        }
+      "#,
+    )]);
+
+    assert_eq!(
+      ids(&registry.event_handler_ids),
+      vec![
+        ("_handler$0", "src/components/List.tsx@0"),
+        ("_handler$1", "src/components/List.tsx@1"),
+        ("_handler$2", "src/components/List.tsx@2"),
+      ]
+    );
+    assert!(registry.form_action_ids.is_empty());
+  }
+
+  #[test]
+  fn replays_form_actions_of_every_method() {
+    let registry = assert_replay_matches_with_jsx(&[(
+      "src/routes/article/[id]/index.tsx",
+      "/article/:id",
+      r#"
+        export default function Page(props) {
+          const requestContext = props.ctx;
+          const title = props.title;
+          return (
+            <main>
+              <form hx-get={(c) => c.text("get")}>
+                <button hx-post={async (c) => <p hx-delete={() => title} hx-on:click={() => alert(title)} />} />
+              </form>
+              <div>
+                <div>
+                  <button hx-put={() => title} ctx={requestContext} />
+                  <button hx-patch={function (c) { return c.json({ title }); }} />
+                  <button hx-delete={() => null} />
+                </div>
+              </div>
+            </main>
+          );
+        }
+      "#,
+    )]);
+
+    let module = "src/routes/article/[id]/index.tsx";
+    assert_eq!(
+      registry.action_method_map,
+      vec![
+        (format!("{}@0", module), FormActionMethod::Get),
+        (format!("{}@1", module), FormActionMethod::Post),
+        (format!("{}@2", module), FormActionMethod::Delete),
+        (format!("{}@3", module), FormActionMethod::Put),
+        (format!("{}@4", module), FormActionMethod::Patch),
+        (format!("{}@5", module), FormActionMethod::Delete),
+      ]
+    );
+    assert_eq!(registry.event_handler_ids.len(), 1);
+  }
+
+  #[test]
+  fn replays_multiple_components_and_modules() {
+    let registry = assert_replay_matches_with_jsx(&[
+      (
+        "src/components/Dialog.tsx",
+        "",
+        r#"
+          export function Open({ id }) {
+            return <button hx-on:click={() => open(id)} hx-post={() => id}>open</button>;
+          }
+
+          export const Close = ({ id }) => (
+            <div><button hx-on-click={() => close(id)} hx-delete={() => id} /></div>
+          );
+
+          export default function Dialog(props) {
+            return (
+              <dialog>
+                <Open id={props.id} />
+                <Close id={props.id} />
+                <form hx-patch={() => props.id}><input hx-on:change={(e) => validate(e)} /></form>
+              </dialog>
+            );
+          }
+        "#,
+      ),
+      (
+        "src/routes/index.tsx",
+        "/",
+        r#"
+          import Dialog from "../components/Dialog";
+
+          export default function Page() {
+            return <div hx-on:load={() => init()}><Dialog id="a" /><form hx-post={() => "ok"} /></div>;
+          }
+        "#,
+      ),
+    ]);
+
+    assert_eq!(registry.form_action_ids.len(), 4);
+    assert_eq!(registry.event_handler_ids.len(), 4);
+    assert!(registry.form_action_ids.contains(&(
+      "src/routes/index.tsx".into(),
+      "_action$post$0".into(),
+      "src/routes/index.tsx@0".into()
+    )));
+  }
+
+  #[test]
+  fn replays_compiled_object_props() {
+    assert_replay_matches(
+      &[(
+        "src/routes/x/index.tsx",
+        "/x",
+        r#"
+          export default function C({ n }) {
+            return h("button", { "hx-post": () => n, "hx-on:click": () => alert(n) });
+          }
+        "#,
+      )],
+      Jsx::None,
+    );
+  }
+
+  #[test]
+  fn replays_ids_in_counter_order() {
+    // more than ten ids, so that their radix 36 numbering and the names sort differently, with
+    // nested actions which are exported before the actions containing them
+    let buttons = (0..12)
+      .map(|i| {
+        format!(
+          "<button hx-on:click={{() => f({i})}} hx-put={{() => <i hx-get={{() => {i}}} />}} />"
+        )
+      })
+      .collect::<String>();
+    let source = format!(
+      "export default function C() {{ return <div>{}</div>; }}",
+      buttons
+    );
+    let registry = assert_replay_matches_with_jsx(&[("src/components/C.tsx", "", &source)]);
+
+    let mut event_ids = ids(&registry.event_handler_ids);
+    event_ids.sort_by_key(|(export_name, _)| export_name[9..].parse::<usize>().unwrap());
+    assert_eq!(event_ids[10], ("_handler$10", "src/components/C.tsx@a"));
+    assert_eq!(event_ids[11], ("_handler$11", "src/components/C.tsx@b"));
+    assert!(registry
+      .action_method_map
+      .contains(&("src/components/C.tsx@n".to_string(), FormActionMethod::Get)));
+  }
+
+  #[test]
+  fn rejects_exports_with_gaps() {
+    GLOBALS.set(&Globals::new(), || {
+      let module = parse_module(
+        "src/x.ts",
+        "export const _action$post$1 = 1; export const _handler$01 = 1; export const _action$foo$0 = 1;",
+        Syntax::Typescript(Default::default()),
+        EsVersion::EsNext,
+      )
+      .unwrap()
+      .ast;
+
+      let err = ensure_registered_handlers(
+        &ModuleId::new("src/x.ts", "", "."),
+        &mut GlobalIds::new(),
+        &module,
+      )
+      .unwrap_err();
+      assert!(err.contains("_action$post$1"));
+      // names that the transform doesn't generate are ignored
+      assert!(!err.contains("_handler$01"));
+      assert!(!err.contains("_action$foo$0"));
+    });
   }
 }
