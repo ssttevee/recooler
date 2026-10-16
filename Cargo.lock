@@ -499,6 +499,7 @@ dependencies = [
  "farmfe_plugin_minify",
  "farmfe_toolkit",
  "farmfe_toolkit_plugin_types",
+ "hstr",
  "lazy_static",
  "radix_fmt",
  "regex",
@@ -996,9 +997,9 @@ checksum = "7f24254aa9a54b5c858eaee2f5bccdb46aaf0e486a595ed5fd8f86ba55232a70"
 
 [[package]]
 name = "hstr"
-version = "0.2.12"
+version = "0.2.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dae404c0c5d4e95d4858876ab02eecd6a196bb8caa42050dfa809938833fc412"
+checksum = "b0f5356d62012374578cd3a5c013d6586de3efbca3b53379fc1edfbb95c9db14"
 dependencies = [
  "hashbrown 0.14.5",
  "new_debug_unreachable",
