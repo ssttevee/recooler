@@ -12,9 +12,10 @@ use farmfe_core::{
   error::{CompilationError, Result},
   module::{
     module_graph::{ModuleGraph, ModuleGraphEdge},
-    Module, ModuleId, ModuleMetaData,
+    Module, ModuleId, ModuleMetaData, ModuleType,
   },
   parking_lot::{MappedRwLockReadGuard, RwLockReadGuard},
+  plugin::{Plugin, PluginHookContext, PluginLoadHookParam, PluginLoadHookResult},
   regex::Regex,
   relative_path::PathExt,
   serde_json,
@@ -591,6 +592,59 @@ fn copy_completed_modules(from: &ModuleGraph, to: &mut ModuleGraph, overwrite: b
   Ok(())
 }
 
+/// Returns whether the route scan's trace compile loads the module as an empty script instead of
+/// its actual content. That is every file outside of `src_dir` and `routes_dir`: the scan never
+/// walks through them (see [`FarmPluginRecooler::list_dependencies_for_module`]) and they are not
+/// transformed by [`FarmPluginRecooler::process_module`], so loading and parsing them and their
+/// dependencies is wasted work. The checks are the same string prefix checks as there, on the
+/// full id including the query. Virtual modules don't have an absolute resolved path and are
+/// loaded as usual.
+fn is_trace_stubbed(module_id: &str, resolved_path: &str, src_dir: &str, routes_dir: &str) -> bool {
+  Path::new(resolved_path).is_absolute()
+    && !module_id.starts_with(src_dir)
+    && !module_id.starts_with(routes_dir)
+}
+
+/// Stubs out the modules of the route scan's trace compile that can't affect the scan result, see
+/// [`is_trace_stubbed`].
+struct TraceStubPlugin {
+  src_dir: String,
+  routes_dir: String,
+}
+
+impl Plugin for TraceStubPlugin {
+  fn name(&self) -> &str {
+    "FarmPluginRecoolerTraceStub"
+  }
+
+  // the load hook must run before any other plugin loads the module
+  fn priority(&self) -> i32 {
+    i32::MAX
+  }
+
+  fn load(
+    &self,
+    param: &PluginLoadHookParam,
+    _context: &Arc<CompilationContext>,
+    _hook_context: &PluginHookContext,
+  ) -> Result<Option<PluginLoadHookResult>> {
+    if !is_trace_stubbed(
+      &param.module_id,
+      param.resolved_path,
+      &self.src_dir,
+      &self.routes_dir,
+    ) {
+      return Ok(None);
+    }
+
+    Ok(Some(PluginLoadHookResult {
+      content: String::new(),
+      module_type: ModuleType::Js,
+      source_map: None,
+    }))
+  }
+}
+
 impl FarmPluginRecooler {
   fn list_dependencies_for_module(
     &self,
@@ -674,8 +728,16 @@ impl FarmPluginRecooler {
     config.persistent_cache = Box::new(PersistentCacheConfig::Bool(false));
     let canonical_path_map = config.input.clone();
 
-    let compiler =
-      Compiler::new_without_internal_plugins(config, context.plugin_driver.plugins.clone())?;
+    let mut plugins = context.plugin_driver.plugins.clone();
+    // reused modules are copied into the main module graph, so they must not be stubbed
+    if !self.reuse_modules {
+      plugins.push(Arc::new(TraceStubPlugin {
+        src_dir: self.src_dir.clone(),
+        routes_dir: self.routes_dir.clone(),
+      }) as _);
+    }
+
+    let compiler = Compiler::new_without_internal_plugins(config, plugins)?;
 
     // copy module graph to new compiler
     // if self.reuse_modules {
@@ -932,5 +994,63 @@ impl FarmPluginRecooler {
     // println!("scan found {} routes", result.routes.len());
 
     Ok(result)
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::is_trace_stubbed;
+
+  fn stubbed(module_id: &str, resolved_path: &str) -> bool {
+    is_trace_stubbed(module_id, resolved_path, "src", "src/routes")
+  }
+
+  #[test]
+  fn trace_stubs_files_outside_src_dir() {
+    assert!(stubbed(
+      "node_modules/hono/dist/index.js",
+      "/app/node_modules/hono/dist/index.js"
+    ));
+    assert!(stubbed("../common/util.ts", "/common/util.ts"));
+    assert!(stubbed(
+      "node_modules/lib/style.css?inline",
+      "/app/node_modules/lib/style.css"
+    ));
+  }
+
+  #[test]
+  fn trace_does_not_stub_files_in_src_dir() {
+    assert!(!stubbed("src/root.tsx", "/app/src/root.tsx"));
+    assert!(!stubbed(
+      "src/routes/index.tsx",
+      "/app/src/routes/index.tsx"
+    ));
+    assert!(!stubbed("src/styles.css", "/app/src/styles.css"));
+    assert!(!stubbed(
+      "src/components/button.tsx?recooler-handlers",
+      "/app/src/components/button.tsx"
+    ));
+  }
+
+  #[test]
+  fn trace_does_not_stub_files_in_routes_dir_outside_src_dir() {
+    assert!(!is_trace_stubbed(
+      "pages/index.tsx",
+      "/app/pages/index.tsx",
+      "src",
+      "pages"
+    ));
+    assert!(is_trace_stubbed(
+      "lib/util.ts",
+      "/app/lib/util.ts",
+      "src",
+      "pages"
+    ));
+  }
+
+  #[test]
+  fn trace_does_not_stub_virtual_modules() {
+    assert!(!stubbed("recooler::metadata", "recooler::metadata"));
+    assert!(!stubbed("virtual:module", "virtual:module"));
   }
 }
