@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 
 use farmfe_core::{
   module::{CommentsMetaData, CommentsMetaDataItem, ModuleId},
@@ -1082,6 +1082,452 @@ impl Visit for IdentRefCollector {
   }
 }
 
+fn ident_refs<N: VisitWith<IdentRefCollector> + ?Sized>(node: &N) -> Vec<Id> {
+  let mut refs = IdentRefCollector::default();
+  node.visit_with(&mut refs);
+  refs.idents.iter().map(Ident::to_id).collect()
+}
+
+/// A top level declaration, import specifier or var declarator that a handler slice may keep.
+struct SliceNode {
+  /// Index of the module item.
+  item: usize,
+  /// Index of the import specifier or var declarator within the module item.
+  part: Option<usize>,
+  /// Identifiers referenced by the node, excluding those in types.
+  refs: Vec<Id>,
+}
+
+const ON_LOAD_EXPORT: &str = "onLoad";
+
+/// An export that a handler slice keeps, along with everything it references.
+enum SliceRoot {
+  /// A hoisted event handler, by export name.
+  Handler(Atom),
+  /// The `onLoad` export of a route module.
+  OnLoad,
+}
+
+/// How a kept node was reached from the slice roots, for error messages.
+struct SliceReach {
+  /// The identifier that referenced the node, or `None` if the node is the root itself.
+  via: Option<Atom>,
+  from: Option<usize>,
+  root: usize,
+}
+
+#[derive(Default)]
+struct SliceGraph {
+  nodes: Vec<SliceNode>,
+  /// Nodes binding each top level identifier; usually one, but overloads and merged
+  /// declarations may bind the same identifier more than once.
+  bindings: HashMap<Id, Vec<usize>>,
+}
+
+impl SliceGraph {
+  fn add(&mut self, item: usize, part: Option<usize>, binds: Vec<Id>, refs: Vec<Id>) {
+    let node = self.nodes.len();
+    self.nodes.push(SliceNode { item, part, refs });
+    for id in binds {
+      self.bindings.entry(id).or_default().push(node);
+    }
+  }
+
+  fn add_decl(&mut self, item: usize, decl: &Decl) {
+    match decl {
+      Decl::Fn(f) => self.add(item, None, vec![f.ident.to_id()], ident_refs(f)),
+      Decl::Class(c) => self.add(item, None, vec![c.ident.to_id()], ident_refs(c)),
+      Decl::Var(var) => {
+        for (i, declarator) in var.decls.iter().enumerate() {
+          let mut binds = vec![];
+          pat_binding_idents(&declarator.name, &mut binds);
+          self.add(
+            item,
+            Some(i),
+            binds.iter().map(Ident::to_id).collect(),
+            ident_refs(declarator),
+          );
+        }
+      }
+      Decl::TsEnum(e) => self.add(item, None, vec![e.id.to_id()], ident_refs(e)),
+      Decl::TsModule(m) => {
+        if let TsModuleName::Ident(id) = &m.id {
+          self.add(item, None, vec![id.to_id()], ident_refs(m));
+        }
+      }
+      // types are erased, and top level `using` declarations are not supported
+      Decl::TsInterface(_) | Decl::TsTypeAlias(_) | Decl::Using(_) => {}
+    }
+  }
+}
+
+fn handler_export(item: &ModuleItem) -> Option<&VarDeclarator> {
+  let ModuleItem::ModuleDecl(ModuleDecl::ExportDecl(ExportDecl {
+    decl: Decl::Var(var),
+    ..
+  })) = item
+  else {
+    return None;
+  };
+
+  match var.decls.as_slice() {
+    [declarator] => match &declarator.name {
+      Pat::Ident(binding) if binding.id.sym.starts_with(super::EVENT_DECL_PREFIX) => {
+        Some(declarator)
+      }
+      _ => None,
+    },
+    _ => None,
+  }
+}
+
+/// Returns whether an export specifier exports `onLoad`, matching the exports found by
+/// [`crate::es_ast_helpers::find_exports`].
+fn exports_on_load(specifier: &ExportSpecifier) -> bool {
+  let name = match specifier {
+    ExportSpecifier::Namespace(s) => &s.name,
+    ExportSpecifier::Default(s) => return s.exported.sym == ON_LOAD_EXPORT,
+    ExportSpecifier::Named(s) => s.exported.as_ref().unwrap_or(&s.orig),
+  };
+  match name {
+    ModuleExportName::Ident(ident) => ident.sym == ON_LOAD_EXPORT,
+    ModuleExportName::Str(s) => s.value == ON_LOAD_EXPORT,
+  }
+}
+
+/// Cuts a module processed by [`transform_module`] down to its event handler exports, its
+/// `onLoad` export if `keep_on_load` is set (i.e. it is a route module), and the top level
+/// declarations and imports they reference, so that client scripts do not include the server side
+/// code of the module.
+///
+/// Everything else is dropped, including the components, form actions and top level side effects.
+/// Kept imports whose specifier matches one of `banned_imports` are reported as errors.
+pub(crate) fn slice_handler_module(
+  module_id: &ModuleId,
+  global_ids: &crate::GlobalIds,
+  swc_module: &mut Module,
+  keep_on_load: bool,
+  banned_imports: &[Regex],
+) -> Result<(), String> {
+  let mut graph = SliceGraph::default();
+  let mut roots = vec![];
+  let mut on_load_root = None;
+  // nodes, or identifiers referencing nodes, where the walk starts
+  let mut node_seeds: Vec<(usize, usize)> = vec![];
+  let mut ref_seeds: Vec<(usize, Vec<Id>)> = vec![];
+  // module items and export specifiers that keep their `export` because they export `onLoad`
+  let mut on_load_items = HashSet::new();
+  let mut on_load_specifiers = HashSet::new();
+  for (i, item) in swc_module.body.iter().enumerate() {
+    if let Some(declarator) = handler_export(item) {
+      ref_seeds.push((roots.len(), ident_refs(item)));
+      roots.push(SliceRoot::Handler(
+        declarator.name.as_ident().unwrap().id.sym.clone(),
+      ));
+      continue;
+    }
+
+    let mut on_load_root_index = |roots: &mut Vec<SliceRoot>| {
+      *on_load_root.get_or_insert_with(|| {
+        roots.push(SliceRoot::OnLoad);
+        roots.len() - 1
+      })
+    };
+
+    match item {
+      ModuleItem::ModuleDecl(ModuleDecl::Import(import)) if !import.type_only => {
+        for (j, specifier) in import.specifiers.iter().enumerate() {
+          let local = match specifier {
+            ImportSpecifier::Named(s) if s.is_type_only => continue,
+            ImportSpecifier::Named(s) => &s.local,
+            ImportSpecifier::Default(s) => &s.local,
+            ImportSpecifier::Namespace(s) => &s.local,
+          };
+          graph.add(i, Some(j), vec![local.to_id()], vec![]);
+        }
+      }
+      ModuleItem::ModuleDecl(ModuleDecl::TsImportEquals(import)) if !import.is_type_only => {
+        let refs = match &import.module_ref {
+          TsModuleRef::TsEntityName(name) => {
+            let mut name = name;
+            while let TsEntityName::TsQualifiedName(qualified) = name {
+              name = &qualified.left;
+            }
+            vec![name.as_ident().unwrap().to_id()]
+          }
+          TsModuleRef::TsExternalModuleRef(_) => vec![],
+        };
+        graph.add(i, None, vec![import.id.to_id()], refs);
+      }
+      ModuleItem::ModuleDecl(ModuleDecl::ExportDecl(export)) => {
+        let first = graph.nodes.len();
+        graph.add_decl(i, &export.decl);
+        if !keep_on_load {
+          continue;
+        }
+
+        // `export function onLoad` and `export const onLoad = ...`
+        let on_load_node = match &export.decl {
+          Decl::Fn(f) if f.ident.sym == ON_LOAD_EXPORT => Some(first),
+          Decl::Var(var) if !var.declare => var
+            .decls
+            .iter()
+            .position(|declarator| {
+              matches!(&declarator.name, Pat::Ident(binding) if binding.id.sym == ON_LOAD_EXPORT)
+            })
+            .map(|j| first + j),
+          _ => None,
+        };
+        if let Some(node) = on_load_node {
+          node_seeds.push((on_load_root_index(&mut roots), node));
+          on_load_items.insert(i);
+        }
+      }
+      // `export { x as onLoad }` and `export { onLoad } from "..."`
+      ModuleItem::ModuleDecl(ModuleDecl::ExportNamed(export)) if keep_on_load => {
+        for (j, specifier) in export.specifiers.iter().enumerate() {
+          if !exports_on_load(specifier) {
+            continue;
+          }
+          let root = on_load_root_index(&mut roots);
+          match (&export.src, specifier) {
+            (
+              None,
+              ExportSpecifier::Named(ExportNamedSpecifier {
+                orig: ModuleExportName::Ident(orig),
+                ..
+              }),
+            ) => ref_seeds.push((root, vec![orig.to_id()])),
+            (Some(_), _) => {
+              node_seeds.push((root, graph.nodes.len()));
+              graph.add(i, Some(j), vec![], vec![]);
+            }
+            _ => continue,
+          }
+          on_load_specifiers.insert((i, j));
+        }
+      }
+      ModuleItem::ModuleDecl(ModuleDecl::ExportDefaultDecl(export)) => match &export.decl {
+        DefaultDecl::Fn(FnExpr {
+          ident: Some(ident), ..
+        })
+        | DefaultDecl::Class(ClassExpr {
+          ident: Some(ident), ..
+        }) => graph.add(i, None, vec![ident.to_id()], ident_refs(&export.decl)),
+        _ => {}
+      },
+      ModuleItem::Stmt(Stmt::Decl(decl)) => graph.add_decl(i, decl),
+      _ => {}
+    }
+  }
+
+  // walk the references breadth first so that error messages show the shortest chain
+  let mut reached: Vec<Option<SliceReach>> = graph.nodes.iter().map(|_| None).collect();
+  let mut queue = VecDeque::new();
+  for (root, node) in node_seeds {
+    if reached[node].is_none() {
+      reached[node] = Some(SliceReach {
+        via: None,
+        from: None,
+        root,
+      });
+      queue.push_back(node);
+    }
+  }
+  for (root, refs) in ref_seeds {
+    for id in refs {
+      for &node in graph.bindings.get(&id).into_iter().flatten() {
+        if reached[node].is_none() {
+          reached[node] = Some(SliceReach {
+            via: Some(id.0.clone()),
+            from: None,
+            root,
+          });
+          queue.push_back(node);
+        }
+      }
+    }
+  }
+  while let Some(from) = queue.pop_front() {
+    let root = reached[from].as_ref().unwrap().root;
+    for id in &graph.nodes[from].refs {
+      for &node in graph.bindings.get(id).into_iter().flatten() {
+        if reached[node].is_none() {
+          reached[node] = Some(SliceReach {
+            via: Some(id.0.clone()),
+            from: Some(from),
+            root,
+          });
+          queue.push_back(node);
+        }
+      }
+    }
+  }
+
+  let kept = graph
+    .nodes
+    .iter()
+    .zip(&reached)
+    .filter(|(_, reach)| reach.is_some())
+    .map(|(node, _)| (node.item, node.part))
+    .collect::<HashSet<_>>();
+
+  let chain = |node: usize| {
+    let mut names = vec![];
+    let mut current = Some(node);
+    while let Some(node) = current {
+      let reach = reached[node].as_ref().unwrap();
+      names.extend(reach.via.as_ref().map(Atom::to_string));
+      current = reach.from;
+    }
+    let root = reached[node].as_ref().unwrap().root;
+    names.push(match &roots[root] {
+      SliceRoot::Handler(export_name) => export_name.to_string(),
+      SliceRoot::OnLoad => ON_LOAD_EXPORT.to_string(),
+    });
+    names.reverse();
+    (root, names.join(" → "))
+  };
+
+  let mut errors = vec![];
+  let mut reported = HashSet::new();
+  for (node, reach) in reached.iter().enumerate() {
+    let item = graph.nodes[node].item;
+    if reach.is_none() || reported.contains(&item) {
+      continue;
+    }
+    let src = match &swc_module.body[item] {
+      ModuleItem::ModuleDecl(ModuleDecl::Import(import)) => &import.src.value,
+      ModuleItem::ModuleDecl(ModuleDecl::ExportNamed(NamedExport { src: Some(src), .. })) => {
+        &src.value
+      }
+      ModuleItem::ModuleDecl(ModuleDecl::TsImportEquals(import)) => match &import.module_ref {
+        TsModuleRef::TsExternalModuleRef(module_ref) => &module_ref.expr.value,
+        TsModuleRef::TsEntityName(_) => continue,
+      },
+      _ => continue,
+    };
+    if banned_imports.iter().any(|pattern| pattern.is_match(src)) {
+      reported.insert(item);
+      let (root, chain) = chain(node);
+      let exporter = match &roots[root] {
+        SliceRoot::Handler(export_name) => format!(
+          "event handler {}",
+          global_ids
+            .event_handler_ids
+            .existing_id(module_id, export_name)
+            .cloned()
+            .unwrap_or_else(|| format!("{}#{}", module_id.relative_path(), export_name)),
+        ),
+        SliceRoot::OnLoad => format!("{} of {}", ON_LOAD_EXPORT, module_id.relative_path()),
+      };
+      errors.push(format!(
+        "{} imports banned module {} via {}",
+        exporter,
+        serde_json::to_string(src.as_str()).unwrap(),
+        chain,
+      ));
+    }
+  }
+  if !errors.is_empty() {
+    return Err(errors.join("\n"));
+  }
+
+  let body = std::mem::take(&mut swc_module.body);
+  for (i, item) in body.into_iter().enumerate() {
+    if handler_export(&item).is_some() {
+      swc_module.body.push(item);
+      continue;
+    }
+
+    let decl = match item {
+      ModuleItem::ModuleDecl(ModuleDecl::Import(mut import)) => {
+        let mut j = 0;
+        import.specifiers.retain(|_| {
+          j += 1;
+          kept.contains(&(i, Some(j - 1)))
+        });
+        if !import.specifiers.is_empty() {
+          swc_module
+            .body
+            .push(ModuleItem::ModuleDecl(ModuleDecl::Import(import)));
+        }
+        continue;
+      }
+      ModuleItem::ModuleDecl(ModuleDecl::ExportNamed(mut export)) => {
+        let mut j = 0;
+        export.specifiers.retain(|_| {
+          j += 1;
+          on_load_specifiers.contains(&(i, j - 1))
+        });
+        if !export.specifiers.is_empty() {
+          swc_module
+            .body
+            .push(ModuleItem::ModuleDecl(ModuleDecl::ExportNamed(export)));
+        }
+        continue;
+      }
+      ModuleItem::ModuleDecl(ModuleDecl::TsImportEquals(mut import)) => {
+        if kept.contains(&(i, None)) {
+          import.is_export = false;
+          swc_module
+            .body
+            .push(ModuleItem::ModuleDecl(ModuleDecl::TsImportEquals(import)));
+        }
+        continue;
+      }
+      ModuleItem::ModuleDecl(ModuleDecl::ExportDecl(export)) => export.decl,
+      ModuleItem::ModuleDecl(ModuleDecl::ExportDefaultDecl(export)) => match export.decl {
+        DefaultDecl::Fn(FnExpr {
+          ident: Some(ident),
+          function,
+        }) => Decl::Fn(FnDecl {
+          ident,
+          declare: false,
+          function,
+        }),
+        DefaultDecl::Class(ClassExpr {
+          ident: Some(ident),
+          class,
+        }) => Decl::Class(ClassDecl {
+          ident,
+          declare: false,
+          class,
+        }),
+        _ => continue,
+      },
+      ModuleItem::Stmt(Stmt::Decl(decl)) => decl,
+      _ => continue,
+    };
+
+    let decl = match decl {
+      Decl::Var(mut var) => {
+        let mut j = 0;
+        var.decls.retain(|_| {
+          j += 1;
+          kept.contains(&(i, Some(j - 1)))
+        });
+        if var.decls.is_empty() {
+          continue;
+        }
+        Decl::Var(var)
+      }
+      decl if kept.contains(&(i, None)) => decl,
+      _ => continue,
+    };
+    swc_module.body.push(if on_load_items.contains(&i) {
+      ModuleItem::ModuleDecl(ModuleDecl::ExportDecl(ExportDecl {
+        span: Default::default(),
+        decl,
+      }))
+    } else {
+      ModuleItem::Stmt(Stmt::Decl(decl))
+    });
+  }
+
+  Ok(())
+}
+
 #[cfg(test)]
 mod tests {
   use std::sync::Arc;
@@ -1103,10 +1549,40 @@ mod tests {
 
   use crate::{ids::GlobalIds, AtomStore};
 
-  use super::transform_module;
+  use super::{slice_handler_module, transform_module};
 
   /// Mirrors farm: `resolver` runs when parsing and `hygiene` runs when rendering.
   fn try_transform(route: &str, source: &str) -> Result<String, String> {
+    try_transform_and_slice(route, source, None)
+  }
+
+  /// Transforms and then slices the module like its handlers variant, with the given banned
+  /// import patterns.
+  fn try_slice(source: &str, banned_imports: &[&str]) -> Result<String, String> {
+    try_slice_with(source, true, banned_imports)
+  }
+
+  fn try_slice_with(
+    source: &str,
+    keep_on_load: bool,
+    banned_imports: &[&str],
+  ) -> Result<String, String> {
+    let banned_imports = banned_imports
+      .iter()
+      .map(|pattern| regex::Regex::new(pattern).unwrap())
+      .collect::<Vec<_>>();
+    try_transform_and_slice("/x", source, Some((keep_on_load, &banned_imports)))
+  }
+
+  fn slice(source: &str) -> String {
+    compact(&try_slice(source, &[]).unwrap())
+  }
+
+  fn try_transform_and_slice(
+    route: &str,
+    source: &str,
+    slice: Option<(bool, &[regex::Regex])>,
+  ) -> Result<String, String> {
     GLOBALS.set(&Globals::new(), || {
       let parsed = parse_module(
         "src/routes/article/[id]/index.tsx",
@@ -1125,14 +1601,26 @@ mod tests {
       let top_level_mark = Mark::new();
       module.visit_mut_with(&mut resolver(unresolved_mark, top_level_mark, true));
 
+      let module_id = ModuleId::new("src/routes/article/[id]/index.tsx", "", ".");
+      let mut global_ids = GlobalIds::new();
       transform_module(
-        &ModuleId::new("src/routes/article/[id]/index.tsx", "", "."),
+        &module_id,
         route.to_string(),
-        &mut GlobalIds::new(),
+        &mut global_ids,
         &mut AtomStore::default(),
         &mut module,
         &mut comments,
       )?;
+
+      if let Some((keep_on_load, banned_imports)) = slice {
+        slice_handler_module(
+          &module_id,
+          &global_ids,
+          &mut module,
+          keep_on_load,
+          banned_imports,
+        )?;
+      }
 
       module.visit_mut_with(&mut hygiene_with_config(HygieneConfig {
         top_level_mark,
@@ -1448,5 +1936,297 @@ mod tests {
       // panics if the transformed module does not match the expected ids
       crate::htmx::validate::ensure_registered_handlers(&module_id, &mut GlobalIds::new(), &module);
     });
+  }
+
+  #[test]
+  fn slices_handler_helpers_and_drops_server_code() {
+    let result = slice(
+      r#"
+        import { query as q } from "faunadb";
+        import { type BountyMultipliers, faunaClient } from "@app/backend/fql";
+        import { runAdminAction } from "../lib/admin-action";
+        import Button from "./Button";
+        import "./styles.css";
+
+        export interface Props { multipliers?: BountyMultipliers }
+
+        const defaultMultipliers: BountyMultipliers = { tier: [1] };
+
+        function formatNumber(n: number): string {
+          return n.toFixed(2);
+        }
+
+        function multipliersFromFormPayload(payload: Record<string, any>): BountyMultipliers {
+          return payload as unknown as BountyMultipliers;
+        }
+
+        function setElementFormattedNumber(id: string, value: number) {
+          (document.getElementById(id) as HTMLElement).innerText = formatNumber(value);
+        }
+
+        export const updateMultipliersTable = () => {
+          const multipliers = multipliersFromFormPayload({});
+          setElementFormattedNumber("x", multipliers.tier[0]);
+        };
+
+        console.log("side effect");
+
+        export async function ManageMultipliersButton({ multipliers }: Props) {
+          multipliers ??= (await faunaClient.query(q.Get("x"))) ?? defaultMultipliers;
+          return (
+            <Button
+              hx-on-click={function (this: HTMLButtonElement) {
+                ((window as any).updateMultipliersTable = updateMultipliersTable)();
+              }}
+              hx-post={async (ctx) => runAdminAction(ctx, multipliers)}
+            />
+          );
+        }
+      "#,
+    );
+
+    assert!(result.contains("function formatNumber(n: number): string"));
+    assert!(result.contains("function multipliersFromFormPayload("));
+    assert!(result.contains("function setElementFormattedNumber("));
+    assert!(result.contains("const updateMultipliersTable = ()=>{"));
+    assert!(!result.contains("export const updateMultipliersTable"));
+    assert!(result.contains("export const _handler$0 = function(this: HTMLButtonElement) {"));
+    for dropped in [
+      "faunadb",
+      "fql",
+      "admin-action",
+      "./Button",
+      "styles.css",
+      "interface Props",
+      "defaultMultipliers",
+      "side effect",
+      "ManageMultipliersButton",
+      "_action$",
+      "farm-plugin-recooler/helpers",
+    ] {
+      assert!(
+        !result.contains(dropped),
+        "{} was not dropped: {}",
+        dropped,
+        result
+      );
+    }
+  }
+
+  #[test]
+  fn slices_handlers_with_captured_scope() {
+    let result = slice(
+      r#"
+        import { fmt } from "./fmt";
+        import { db } from "./db";
+        export default async function C({ msg }) {
+          await db.get();
+          return <button hx-on:click={() => alert(fmt(msg))} />;
+        }
+      "#,
+    );
+
+    assert!(result.contains(r#"import { fmt } from "./fmt";"#));
+    assert!(result.contains("export const _handler$0 = ({ msg })=>()=>alert(fmt(msg));"));
+    assert!(!result.contains("./db"));
+    assert!(!result.contains("handlerScope"));
+    assert!(!result.contains("function C"));
+  }
+
+  #[test]
+  fn slices_out_type_only_imports() {
+    let result = slice(
+      r#"
+        import type { A } from "./a";
+        import { type B, c } from "./b";
+        import { D } from "./d";
+        export default function C() {
+          return <button hx-on:click={(e: A) => { const x: B = c; return e as unknown as D; }} />;
+        }
+      "#,
+    );
+
+    assert!(result.contains(r#"import { c } from "./b";"#));
+    assert!(!result.contains("./a"));
+    assert!(!result.contains("type B"));
+    assert!(!result.contains("./d"));
+  }
+
+  #[test]
+  fn slices_destructured_var_declarators() {
+    let result = slice(
+      r#"
+        import { config } from "./config";
+        import { server } from "./server";
+        const { a, b: [c] } = config, unused = server();
+        let other = 1;
+        export default function C() {
+          return <button hx-on:click={() => c} />;
+        }
+      "#,
+    );
+
+    assert!(result.contains(r#"import { config } from "./config";"#));
+    assert!(result.contains("const { a, b: [c] } = config;"));
+    assert!(!result.contains("unused"));
+    assert!(!result.contains("server"));
+    assert!(!result.contains("other"));
+  }
+
+  #[test]
+  fn slices_partially_used_import_declarations() {
+    let result = slice(
+      r#"
+        import { a, b, c as d } from "./m";
+        import def, { e } from "./n";
+        import * as ns from "./o";
+        import f, * as g from "./p";
+        export default function C() {
+          return <button hx-on:click={() => [a, d, ns.x, f, b2]} hx-on:keyup={() => def} />;
+        }
+      "#,
+    );
+
+    assert!(result.contains(r#"import { a, c as d } from "./m";"#));
+    assert!(result.contains(r#"import def from "./n";"#));
+    assert!(result.contains(r#"import * as ns from "./o";"#));
+    assert!(result.contains(r#"import f from "./p";"#));
+  }
+
+  #[test]
+  fn reports_banned_imports_with_reference_chain() {
+    let source = r#"
+      import { faunaClient } from "../lib/fql";
+      import { query as q } from "faunadb";
+      function query() {
+        return faunaClient.query();
+      }
+      export const updateTable = () => query();
+      export default async function C() {
+        await faunaClient.query(q.Get("x"));
+        return <><button hx-on:click={() => 1} /><button hx-on:click={() => updateTable()} /></>;
+      }
+    "#;
+
+    let err = try_slice(source, &["/fql$"]).unwrap_err();
+    assert_eq!(
+      err,
+      r#"event handler src/routes/article/[id]/index.tsx@1 imports banned module "../lib/fql" via _handler$1 → updateTable → query → faunaClient"#
+    );
+
+    // imports that the handlers do not use are dropped instead of reported
+    assert!(try_slice(source, &["^faunadb$"]).is_ok());
+  }
+
+  #[test]
+  fn slices_on_load_without_event_handlers() {
+    let source = r#"
+      import { db } from "./db";
+      import { fmt } from "./fmt";
+      function helper() {
+        return fmt(1);
+      }
+      export const onLoad = () => {
+        helper();
+      };
+      export default async function Page() {
+        await db.get();
+        return <div />;
+      }
+    "#;
+
+    let result = compact(&try_slice(source, &[]).unwrap());
+    assert!(result.contains(r#"import { fmt } from "./fmt";"#));
+    assert!(result.contains("function helper() {"));
+    assert!(result.contains("export const onLoad = ()=>{ helper(); };"));
+    assert!(!result.contains("./db"));
+    assert!(!result.contains("Page"));
+
+    // only route modules keep `onLoad`, since that of other modules never runs on the client
+    let result = compact(&try_slice_with(source, false, &[]).unwrap());
+    assert!(!result.contains("onLoad"));
+    assert!(!result.contains("helper"));
+  }
+
+  #[test]
+  fn slices_on_load_and_handlers_sharing_a_helper() {
+    let result = slice(
+      r#"
+        import { db } from "./db";
+        function shared(n) {
+          return n * 2;
+        }
+        export async function onLoad() {
+          shared(1);
+        }
+        export default async function Page() {
+          await db.get();
+          return <button hx-on:click={() => shared(2)} />;
+        }
+      "#,
+    );
+
+    assert!(result.contains("export async function onLoad() { shared(1); }"));
+    assert!(result.contains("export const _handler$0 = ()=>shared(2);"));
+    assert_eq!(result.matches("function shared(").count(), 1);
+    assert!(!result.contains("./db"));
+  }
+
+  #[test]
+  fn slices_on_load_export_forms() {
+    // `export { local as onLoad }`
+    let result = slice(
+      r#"
+        import { run } from "./run";
+        function load() {
+          run();
+        }
+        export { load as onLoad, other };
+        const other = 1;
+      "#,
+    );
+    assert!(result.contains(r#"import { run } from "./run";"#));
+    assert!(result.contains("function load() { run(); }"));
+    assert!(result.contains("export { load as onLoad };"));
+    assert!(!result.contains("other"));
+
+    // `export { onLoad } from "..."`
+    let result = slice(r#"export { onLoad, other } from "./client";"#);
+    assert!(result.contains(r#"export { onLoad } from "./client";"#));
+
+    // one of several declarators
+    let result = slice("export const a = 1, b = 2, onLoad = () => a;");
+    assert!(result.contains("export const a = 1, onLoad = ()=>a;"));
+
+    // `declare` is not an export that runs
+    let result = slice("export declare const onLoad: () => void;");
+    assert!(!result.contains("onLoad"));
+  }
+
+  #[test]
+  fn reports_banned_imports_reached_from_on_load() {
+    let err = try_slice(
+      r#"
+        import { x } from "../lib/fql";
+        function helper() {
+          return x.query();
+        }
+        export function onLoad() {
+          helper();
+        }
+      "#,
+      &["/fql$"],
+    )
+    .unwrap_err();
+    assert_eq!(
+      err,
+      r#"onLoad of src/routes/article/[id]/index.tsx imports banned module "../lib/fql" via onLoad → helper → x"#
+    );
+
+    let err = try_slice(r#"export { onLoad } from "../lib/fql";"#, &["/fql$"]).unwrap_err();
+    assert_eq!(
+      err,
+      r#"onLoad of src/routes/article/[id]/index.tsx imports banned module "../lib/fql" via onLoad"#
+    );
   }
 }

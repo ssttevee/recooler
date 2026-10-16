@@ -49,6 +49,7 @@ pub struct RecoolerOptions {
   pub reuse_modules: Option<bool>,
   pub route_handler_factory: Option<RouteHandlerFactoryInput>,
   pub action_secret: Option<String>,
+  pub client_banned_imports: Option<Vec<String>>,
 }
 
 struct ModuleSymbol {
@@ -68,6 +69,8 @@ pub struct FarmPluginRecooler {
   route_handler_factory: ModuleSymbol,
   reuse_modules: bool,
   action_secret: Option<String>,
+  /// patterns for modules that must not be included in client scripts
+  client_banned_imports: Vec<Regex>,
   /// compiled client scripts keyed by their generated entry source, so that
   /// routes with identical client entries are only compiled once per build
   client_script_cache: Mutex<HashMap<String, String>>,
@@ -103,6 +106,16 @@ impl FarmPluginRecooler {
       scanned_dir: Default::default(),
       reuse_modules: options.reuse_modules.unwrap_or(false),
       action_secret: options.action_secret.filter(|secret| !secret.is_empty()),
+      client_banned_imports: options
+        .client_banned_imports
+        .unwrap_or_default()
+        .iter()
+        .map(|pattern| {
+          Regex::new(pattern).unwrap_or_else(|e| {
+            panic!("invalid client_banned_imports pattern {:?}: {}", pattern, e)
+          })
+        })
+        .collect(),
       client_script_cache: Default::default(),
       route_handler_factory: options.route_handler_factory.map_or_else(
         || ModuleSymbol {
@@ -135,6 +148,9 @@ impl FarmPluginRecooler {
 const CLIENT_MODULE_PREFIX: &str = "recooler:@";
 const ENTRYPOINT_MODULE: &str = "recooler::app";
 const METADATA_MODULE: &str = "recooler::metadata";
+/// Query for the variant of a component module that only contains its event handlers, the route
+/// `onLoad` export and what they reference, see [`htmx::transform::slice_handler_module`].
+const HANDLERS_MODULE_QUERY: &str = "?recooler-handlers";
 
 impl Plugin for FarmPluginRecooler {
   fn name(&self) -> &str {
@@ -219,19 +235,20 @@ impl Plugin for FarmPluginRecooler {
         Err(e) => {
           match &e {
             CompilationError::GenericError(msg) => match serde_json::from_str::<Vec<String>>(msg) {
+              // nested compiles report every error, e.g. one per banned client import
               Ok(msg) => {
-                print!("{}", msg[0]);
+                println!("{}", msg.join("\n"));
               }
               Err(_) => match serde_json::from_str::<String>(msg) {
                 Ok(msg) => {
-                  print!("{}", msg);
+                  println!("{}", msg);
                 }
                 Err(_) => {
-                  print!("{}", msg);
+                  println!("{}", msg);
                 }
               },
             },
-            _ => print!("qwer {}", e),
+            _ => println!("qwer {}", e),
           }
           return Err(CompilationError::GenericError(
             "failed to generate entrypoint module".to_string(),
@@ -297,11 +314,20 @@ impl Plugin for FarmPluginRecooler {
       return Ok(None);
     };
 
+    // the handlers variant is transformed as the original module so that the handler names and
+    // ids are identical, then sliced
+    let handlers_slice = param.module_id.query_string() == HANDLERS_MODULE_QUERY;
+    let module_id = if handlers_slice {
+      ModuleId::new(param.module_id.relative_path(), "", "")
+    } else {
+      param.module_id.clone()
+    };
+
     let mut ids_lock = self.ids.lock().unwrap();
     let mut atoms_lock = self.atom_store.lock().unwrap();
 
     htmx::transform::transform_module(
-      param.module_id,
+      &module_id,
       strip_path_route_groups(&routes::file_to_route_path(
         &self.routes_dir,
         &PathBuf::from(param.module_id.relative_path()),
@@ -312,6 +338,21 @@ impl Plugin for FarmPluginRecooler {
       &mut script.comments,
     )
     .map_err(CompilationError::GenericError)?;
+
+    if handlers_slice {
+      htmx::transform::slice_handler_module(
+        &module_id,
+        ids_lock.get_mut(),
+        &mut script.ast,
+        // only the `onLoad` of route modules runs on the client
+        routes::is_route_file(
+          &self.routes_dir,
+          &PathBuf::from(param.module_id.relative_path()),
+        ),
+        &self.client_banned_imports,
+      )
+      .map_err(CompilationError::GenericError)?;
+    }
 
     Ok(Some(()))
   }
@@ -413,6 +454,33 @@ impl FarmPluginRecooler {
 
     compiler.compile()?;
 
+    if !self.client_banned_imports.is_empty() {
+      // catches banned modules imported indirectly through other source files
+      let mut banned = compiler
+        .context()
+        .module_graph
+        .read()
+        .modules()
+        .into_iter()
+        .map(|module| module.id.to_string())
+        .filter(|id| {
+          !id.starts_with(CLIENT_MODULE_PREFIX)
+            && self
+              .client_banned_imports
+              .iter()
+              .any(|pattern| pattern.is_match(id))
+        })
+        .collect::<Vec<_>>();
+      if !banned.is_empty() {
+        banned.sort();
+        return Err(CompilationError::GenericError(format!(
+          "client script for {} includes banned modules:\n  {}",
+          module_id.relative_path(),
+          banned.join("\n  ")
+        )));
+      }
+    }
+
     let resource_map = compiler.context().resources_map.lock();
     Ok(String::from_utf8(resource_map.get("client.js").unwrap().bytes.clone()).unwrap())
   }
@@ -478,10 +546,13 @@ impl FarmPluginRecooler {
       let lock = self.ids.lock().unwrap();
       let ids = lock.borrow();
       if let Some(export) = ids.event_handler_ids.id_export(handler_id) {
+        // import from the handlers variant to leave out the server side code of the module
+        let handlers_module_id =
+          ModuleId::new(export.module_id.relative_path(), HANDLERS_MODULE_QUERY, "");
         handlers += format!(
           "{}: {}, ",
           serde_json::to_string(handler_id).unwrap(),
-          import_idents.identifier(&export.module_id, export.export_name),
+          import_idents.identifier(&handlers_module_id, export.export_name),
         )
         .as_str();
       }
@@ -489,9 +560,14 @@ impl FarmPluginRecooler {
 
     let mut out = String::new();
     if route_info.on_load {
+      let handlers_module_id = ModuleId::new(
+        route_info.module_id.relative_path(),
+        HANDLERS_MODULE_QUERY,
+        "",
+      );
       out += format!(
         "{}();\n",
-        import_idents.identifier(&route_info.module_id, "onLoad")
+        import_idents.identifier(&handlers_module_id, "onLoad")
       )
       .as_str();
     }

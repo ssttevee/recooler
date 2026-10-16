@@ -275,6 +275,21 @@ declare interface EventHandlerFn<TElement extends Element = any, TEvent extends 
 }
 ```
 
+Client scripts only include the event handlers, the `onLoad` export of the route module, and the module level functions, variables and imports that they reference. The rest of each module, including the components, form actions, unused imports and module level statements with side effects, is left out. Imports that the handlers and `onLoad` do use are bundled as usual, so keep server side code out of the modules that they import.
+
+To make sure server side code never ends up in a client script, `client_banned_imports` may be set to a list of regular expressions. The build fails if an event handler or route `onLoad` imports a matching module, with the chain of references that led to the import, or if any module in a client script has a matching path (relative to the project root) through some other import.
+
+```ts
+// farm.config.ts
+export default defineConfig({
+  plugins: [recooler({ client_banned_imports: ["(^|/)faunadb(/|$)", "/lib/db"] })],
+});
+```
+
+```
+event handler src/components/X.tsx@2 imports banned module "../lib/db" via _handler$2 → updateTable → dbClient
+```
+
 ### Root Component
 
 The root component is an optional HOC that wraps the entire page. It is meant to be used for rendering the basic HTML document structure, including the `<html>`, `<head>`, and `<body>` elements. The client script is also passed to the root component which should be embedded inline after the content or just before the `</body>` tag.

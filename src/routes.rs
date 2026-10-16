@@ -761,6 +761,15 @@ lazy_static! {
     Regex::new("^middleware(?:@[\\w\\d-]+)?\\.[jt]sx?$").unwrap();
 }
 
+/// Returns whether `file_path` is a route module, i.e. one that `scan_dir` would find.
+pub(crate) fn is_route_file(routes_dir: &str, file_path: &Path) -> bool {
+  file_path.starts_with(routes_dir)
+    && file_path
+      .file_name()
+      .and_then(|name| name.to_str())
+      .is_some_and(|name| ROUTE_FILE_PATTERN.is_match(name))
+}
+
 pub(crate) struct ScannedDir {
   pub(crate) layout_files: Vec<PathBuf>,
   pub(crate) route_files: Vec<PathBuf>,

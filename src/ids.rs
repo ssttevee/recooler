@@ -39,6 +39,11 @@ impl GlobalIdGenerator {
     id.clone()
   }
 
+  /// Returns the id previously generated for the export, without generating a new one.
+  pub(crate) fn existing_id(&self, module_id: &ModuleId, export_name: &str) -> Option<&String> {
+    self.module_name_id_map.get(module_id)?.get(export_name)
+  }
+
   /// for the given modules, return a map of ids to module exports
   pub(crate) fn combined_exports<'a, I: IntoIterator<Item = &'a ModuleId>>(
     &self,
