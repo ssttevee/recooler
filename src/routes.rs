@@ -112,7 +112,10 @@ impl FarmPluginRecooler {
       }
     }
 
-    for (group_path, group_tree) in &tree.children {
+    let mut sorted_children = tree.children.iter().collect::<Vec<_>>();
+    sorted_children.sort_by(|a, b| a.0.cmp(b.0));
+
+    for (group_path, group_tree) in sorted_children {
       let group_hono = hono_ident.clone() + "$";
       let fixed_group_path = &group_path[0..group_path.rfind("/").unwrap() + 1];
 
@@ -224,7 +227,10 @@ impl FarmPluginRecooler {
           route_params_prefix = String::new();
         }
 
-        for method in &route.request_handlers {
+        let mut request_methods = route.request_handlers.iter().collect::<Vec<_>>();
+        request_methods.sort();
+
+        for method in request_methods {
           request_handlers += format!(
             "{}.{}({}{})",
             hono_app_obj,
@@ -250,12 +256,17 @@ impl FarmPluginRecooler {
 
           let mut root_methods_copy = root_action_methods.clone();
           for method in methods {
-            let actions = page
+            let mut action_ids = page
               .handlers
               .action_handlers
               .get(method)
               .unwrap()
               .iter()
+              .collect::<Vec<_>>();
+            action_ids.sort();
+
+            let actions = action_ids
+              .into_iter()
               .flat_map(|action_id| {
                 if let Some(export) = {
                   let mut lock = self.ids.lock().unwrap();
@@ -271,8 +282,6 @@ impl FarmPluginRecooler {
                   vec![]
                 }
               })
-              .collect::<HashSet<_>>()
-              .into_iter()
               .collect::<Vec<_>>()
               .join(", ");
 
@@ -784,7 +793,7 @@ impl FarmPluginRecooler {
     let mut layout_files = Vec::<PathBuf>::new();
     let mut route_files = Vec::<PathBuf>::new();
     let mut middleware_files = Vec::<PathBuf>::new();
-    for e in WalkDir::new(&self.routes_dir) {
+    for e in WalkDir::new(&self.routes_dir).sort_by_file_name() {
       match e {
         Ok(entry) => {
           if !entry.file_type().is_file() {

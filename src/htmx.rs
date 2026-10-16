@@ -1,7 +1,7 @@
 pub(crate) mod transform;
 pub(crate) mod validate;
 
-#[derive(Debug, PartialEq, Eq, Hash, Clone, Copy)]
+#[derive(Debug, PartialEq, Eq, Hash, Clone, Copy, PartialOrd, Ord)]
 pub(crate) enum RequestHandlerMethod {
   Get,
   Post,

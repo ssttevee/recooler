@@ -542,9 +542,17 @@ impl FarmPluginRecooler {
         methods.sort();
 
         for method in &methods {
-          let mut actions = String::new();
+          let mut action_ids = root
+            .handlers
+            .action_handlers
+            .get(method)
+            .unwrap()
+            .iter()
+            .collect::<Vec<_>>();
+          action_ids.sort();
 
-          for action_id in root.handlers.action_handlers.get(method).unwrap() {
+          let mut actions = String::new();
+          for action_id in action_ids {
             if let Some(export) = {
               let lock = self.ids.lock().unwrap();
               let ids = lock.borrow();
