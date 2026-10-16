@@ -10,10 +10,7 @@ use farmfe_core::{
   config::{persistent_cache::PersistentCacheConfig, Config},
   context::CompilationContext,
   error::{CompilationError, Result},
-  module::{
-    module_graph::{ModuleGraph, ModuleGraphEdge},
-    Module, ModuleId, ModuleMetaData, ModuleType,
-  },
+  module::{module_graph::ModuleGraph, Module, ModuleId, ModuleMetaData, ModuleType},
   parking_lot::{MappedRwLockReadGuard, RwLockReadGuard},
   plugin::{Plugin, PluginHookContext, PluginLoadHookParam, PluginLoadHookResult},
   regex::Regex,
@@ -547,51 +544,6 @@ impl ScanResult {
   }
 }
 
-fn copy_dependency(
-  from: &ModuleGraph,
-  to: &mut ModuleGraph,
-  module: &Module,
-  overwrite: bool,
-) -> Result<bool> {
-  if overwrite || !to.has_module(&module.id) {
-    let mut deps = Vec::<(ModuleId, &ModuleGraphEdge)>::new();
-    for (dep_id, edge) in from.dependencies(&module.id) {
-      if !to.has_module(&dep_id) {
-        if let Some(dep) = from.module(&dep_id) {
-          if !copy_dependency(from, to, dep, overwrite)? {
-            // println!("skipped dep {:?}", dep.id);
-            return Ok(false);
-          }
-        } else {
-          // just ignore this
-          return Ok(false);
-        }
-
-        deps.push((dep_id, edge));
-      }
-    }
-
-    to.add_module(module.clone());
-    for (dep, edge) in deps {
-      to.add_edge(&module.id, &dep, edge.clone())?;
-    }
-  }
-
-  Ok(true)
-}
-
-fn copy_completed_modules(from: &ModuleGraph, to: &mut ModuleGraph, overwrite: bool) -> Result<()> {
-  for module in from.modules() {
-    if module.size == 0 {
-      continue;
-    }
-
-    copy_dependency(from, to, module, overwrite)?;
-  }
-
-  Ok(())
-}
-
 /// Returns whether the route scan's trace compile loads the module as an empty script instead of
 /// its actual content. That is every file outside of `src_dir` and `routes_dir`: the scan never
 /// walks through them (see [`FarmPluginRecooler::list_dependencies_for_module`]) and they are not
@@ -652,9 +604,7 @@ impl FarmPluginRecooler {
   /// they are loaded, i.e. before it is decided whether to stub them, so the namespace also depends
   /// on the options that decide it and that `process_module` depends on.
   fn trace_persistent_cache_config(&self, config: &Config) -> PersistentCacheConfig {
-    // reused modules are copied into the main module graph, which only works for modules that are
-    // built by the trace itself
-    if self.reuse_modules || !config.persistent_cache.enabled() {
+    if !config.persistent_cache.enabled() {
       return PersistentCacheConfig::Bool(false);
     }
 
@@ -757,39 +707,17 @@ impl FarmPluginRecooler {
     let canonical_path_map = config.input.clone();
 
     let mut plugins = context.plugin_driver.plugins.clone();
-    // reused modules are copied into the main module graph, so they must not be stubbed
-    if !self.reuse_modules {
-      plugins.push(Arc::new(TraceStubPlugin {
-        src_dir: self.src_dir.clone(),
-        routes_dir: self.routes_dir.clone(),
-      }) as _);
-    }
+    plugins.push(Arc::new(TraceStubPlugin {
+      src_dir: self.src_dir.clone(),
+      routes_dir: self.routes_dir.clone(),
+    }) as _);
 
     let compiler = Compiler::new_without_internal_plugins(config, plugins)?;
-
-    // copy module graph to new compiler
-    // if self.reuse_modules {
-    //   let mut module_graph = compiler.context().module_graph.write();
-    //   copy_completed_modules(&context.module_graph.read(), &mut *module_graph, true)?;
-
-    //   module_graph.update_execution_order_for_modules();
-    // }
 
     let traced_module = compiler.trace_module_graph()?;
     // unlike `compile`, tracing doesn't write the cache
     if compiler.context().config.persistent_cache.enabled() {
       compiler.context().cache_manager.write_cache();
-    }
-
-    if self.reuse_modules {
-      let mut module_graph = context.module_graph.write();
-      copy_completed_modules(
-        &compiler.context().module_graph.read(),
-        &mut *module_graph,
-        false,
-      )?;
-
-      module_graph.update_execution_order_for_modules();
     }
 
     let module_graph_rg = compiler.context().module_graph.read();

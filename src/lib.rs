@@ -46,7 +46,6 @@ pub enum RouteHandlerFactoryInput {
 pub struct RecoolerOptions {
   pub src_dir: Option<String>,
   pub routes_dir: Option<String>,
-  pub reuse_modules: Option<bool>,
   pub route_handler_factory: Option<RouteHandlerFactoryInput>,
   pub action_secret: Option<String>,
   pub client_banned_imports: Option<Vec<String>>,
@@ -67,7 +66,6 @@ pub struct FarmPluginRecooler {
   scanned_dir: farmfe_core::parking_lot::RwLock<Option<routes::ScannedDir>>,
   scanned_routes: farmfe_core::parking_lot::RwLock<Option<routes::ScanResult>>,
   route_handler_factory: ModuleSymbol,
-  reuse_modules: bool,
   action_secret: Option<String>,
   /// patterns for modules that must not be included in client scripts
   client_banned_imports: Vec<Regex>,
@@ -104,7 +102,6 @@ impl FarmPluginRecooler {
       atom_store: Default::default(),
       scanned_routes: Default::default(),
       scanned_dir: Default::default(),
-      reuse_modules: options.reuse_modules.unwrap_or(false),
       action_secret: options.action_secret.filter(|secret| !secret.is_empty()),
       client_banned_imports: options
         .client_banned_imports
