@@ -290,6 +290,13 @@ export default defineConfig({
 event handler src/components/X.tsx@2 imports banned module "../lib/db" via _handler$2 → updateTable → dbClient
 ```
 
+Because only declarations are carried over to the client script, there are a few limitations:
+
+- Module level variables are only initialized by their declaration. Assignments in separate statements are left out, so `export let onLoad;` followed by `onLoad = () => { ... };` is `undefined` on the client.
+- `var` declarations nested inside module level blocks (e.g. `if (...) { var x = 1; }`) and module level `using` declarations are left out.
+- `onLoad` must be exported by name from a route module (`index.tsx`), as a function declaration, a variable, or an export specifier such as `export { load as onLoad }`. `export default function onLoad` is not recognized.
+- If `routes_dir` is outside of `src_dir`, route modules are not transformed, so their whole module is bundled into the client script along with `onLoad`.
+
 ### Root Component
 
 The root component is an optional HOC that wraps the entire page. It is meant to be used for rendering the basic HTML document structure, including the `<html>`, `<head>`, and `<body>` elements. The client script is also passed to the root component which should be embedded inline after the content or just before the `</body>` tag.
