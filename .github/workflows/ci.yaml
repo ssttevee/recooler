@@ -3,10 +3,8 @@ on:
   pull_request:
     branches:
       - main
-  push:
-    branches:
-      - main
-  # release.yml runs this workflow and only publishes if every job passes
+  # release.yml runs this workflow on every push to main and only publishes if every job passes,
+  # so there is no separate push trigger here (it would build every platform twice)
   workflow_call:
 
 jobs:
