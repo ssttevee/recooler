@@ -48,6 +48,8 @@ pub(crate) struct ModuleExport {
 #[derive(Clone)]
 pub(crate) struct PageComponentLayoutItem {
   pub(crate) module_id: ModuleId,
+  /// Whether the layout module has a default export, i.e. the layout HOC that wraps the page.
+  pub(crate) has_hoc: bool,
   pub(crate) head: Option<HeadType>,
 }
 
@@ -244,7 +246,8 @@ impl FarmPluginRecooler {
         }
 
         let mut component_expr = import_idents.identifier(&route.module_id, "default");
-        for layout_module in &page.layouts {
+        // a layout without a HOC, e.g. one that only exports `head`, doesn't wrap the page
+        for layout_module in page.layouts.iter().filter(|l| l.has_hoc) {
           component_expr = format!(
             "{}({})",
             import_idents.identifier(&layout_module.module_id, "default"),
@@ -524,6 +527,7 @@ impl ScanResult {
             .into_iter()
             .map(|l| PageComponentLayoutItem {
               module_id: l.module_id,
+              has_hoc: l.handlers.is_some(),
               head: l.head,
             })
             .collect(),
@@ -1784,6 +1788,54 @@ mod tests {
     // the dependencies in `src_dir` of a route outside of it are still scanned
     assert_eq!(page.handlers.event_handlers.len(), 1);
     assert!(result.root_component.is_some());
+  }
+
+  #[test]
+  fn layout_without_hoc_does_not_wrap_page() {
+    let fixture = Fixture::new(
+      &[
+        ("src/routes/index.tsx", PAGE),
+        (
+          "src/routes/layout.tsx",
+          "export const head = { title: 'x' };",
+        ),
+        ("src/routes/sub/index.tsx", PAGE),
+        ("src/routes/sub/layout.tsx", LAYOUT),
+      ],
+      json!({ "src_dir": "src" }),
+    );
+    let app = fixture
+      .plugin
+      .generate_entrypoint_impl_module(&fixture.context, &Default::default())
+      .unwrap();
+    let page_statement = |path: &str| {
+      app
+        .lines()
+        .find(|line| {
+          line
+            .trim_start()
+            .starts_with(&format!("app.get({:?}, ", path))
+        })
+        .unwrap()
+        .to_string()
+    };
+
+    let index = page_statement("/");
+    assert!(
+      !index.contains("_src_routes_layout_tsx_default"),
+      "{}",
+      index
+    );
+    assert!(index.contains("_src_routes_layout_tsx_head"), "{}", index);
+
+    let sub = page_statement("/sub");
+    assert!(!sub.contains("_src_routes_layout_tsx_default"), "{}", sub);
+    assert!(sub.contains("_src_routes_layout_tsx_head"), "{}", sub);
+    assert!(
+      sub.contains("_src_routes_sub_layout_tsx_default(_"),
+      "{}",
+      sub
+    );
   }
 
   #[test]
