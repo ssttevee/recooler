@@ -29,7 +29,9 @@ use farmfe_toolkit::{
 use walkdir::WalkDir;
 
 use crate::{
-  es_ast_helpers::{find_exports, find_head_export_type, find_source_value_exports},
+  es_ast_helpers::{
+    find_exports, find_head_export_type, find_named_exports, find_source_value_exports,
+  },
   head::{build_head_expr, HeadType},
   htmx::{FormActionMethod, RequestHandlerMethod},
   ids::ComponentHandlerIds,
@@ -941,7 +943,9 @@ fn ignored_on_load_warning(module: &Module) -> Option<String> {
     return None;
   };
 
-  find_exports(&module.id, script)
+  // not `find_exports`, which already reported the star exports of layouts when they were added
+  find_named_exports(script)
+    .0
     .contains("onLoad")
     .then(|| {
       format!(

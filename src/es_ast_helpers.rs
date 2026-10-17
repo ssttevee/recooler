@@ -12,7 +12,22 @@ use farmfe_core::{
 use crate::head::HeadType;
 
 pub(crate) fn find_exports(module_id: &ModuleId, script: &ScriptModuleMetaData) -> HashSet<String> {
+  let (exports, has_star_export) = find_named_exports(script);
+  if has_star_export {
+    println!(
+      "WARNING: star export not traversed while looking for exports in {}",
+      module_id.to_string(),
+    );
+  }
+
+  exports
+}
+
+/// Returns the exports of a module like [`find_exports`], without reporting its star exports,
+/// whose names aren't included, and whether it has any.
+pub(crate) fn find_named_exports(script: &ScriptModuleMetaData) -> (HashSet<String>, bool) {
   let mut exports = HashSet::<String>::new();
+  let mut has_star_export = false;
   for module_item in &script.ast.body {
     if let ModuleItem::ModuleDecl(module_decl) = module_item {
       match module_decl {
@@ -66,17 +81,14 @@ pub(crate) fn find_exports(module_id: &ModuleId, script: &ScriptModuleMetaData) 
           exports.insert(String::from("default"));
         }
         ModuleDecl::ExportAll(..) => {
-          println!(
-            "WARNING: star export not traversed while looking for exports in {}",
-            module_id.to_string(),
-          );
+          has_star_export = true;
         }
         _ => {}
       }
     }
   }
 
-  exports
+  (exports, has_star_export)
 }
 
 fn module_export_name(name: &ModuleExportName) -> String {
