@@ -542,6 +542,20 @@ export function groupMiddleware(middleware: MiddlewareHandler): MiddlewareHandle
   };
 }
 
+/**
+ * Returns `props` without the `ctx` prop, which the plugin passes to components for their form
+ * actions and must not be rendered as an attribute when a component spreads its props onto an
+ * html element. Used by the transform for every spread on an html element.
+ */
+export function omitCtx<T>(props: T): T {
+  if (typeof props === "object" && props !== null && "ctx" in props) {
+    const { ctx: _ctx, ...rest } = props as T & { ctx: unknown };
+    return rest as T;
+  }
+
+  return props;
+}
+
 export function makeCloudflarePagesHandler(
   app: Hono,
 ): (ctx: unknown) => Promise<Response> | Response {

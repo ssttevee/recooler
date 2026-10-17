@@ -4,7 +4,7 @@ import { register } from "node:module";
 import { Hono } from "hono";
 
 register("./extensionless-hooks.mjs", import.meta.url);
-const { actionsMiddleware, buildHeadFn, DefaultRootHOC, groupMiddleware, jsxRouteHandler } = await import(
+const { actionsMiddleware, buildHeadFn, DefaultRootHOC, groupMiddleware, jsxRouteHandler, omitCtx } = await import(
   "../src/helpers.js"
 );
 const { createElement } = await import("easy-jsx-html-engine");
@@ -244,6 +244,16 @@ describe("groupMiddleware", () => {
     const res = await app().request("/posts/7/nope", { method: "DELETE" });
     assert.equal(res.status, 404);
     assert.deepEqual(trace, ["root", "public-posts"]);
+  });
+});
+
+describe("omitCtx", () => {
+  test("drops ctx and keeps everything else", () => {
+    const ctx = { req: {} };
+    assert.deepEqual(omitCtx({ ctx, id: "a", class: "b" }), { id: "a", class: "b" });
+    assert.deepEqual(omitCtx({ id: "a" }), { id: "a" });
+    assert.equal(omitCtx(null), null);
+    assert.equal(omitCtx(undefined), undefined);
   });
 });
 

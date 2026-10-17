@@ -79,6 +79,7 @@ pub(crate) fn transform_module(
         "wrapActionWithPayload",
         "actionScope",
         "handlerScope",
+        "omitCtx",
       ]
       .iter()
       .map(|name| {
@@ -935,6 +936,20 @@ impl<'a> VisitMut for ComponentTransformVisitor<'a> {
     }
 
     node.visit_mut_children_with(self);
+
+    // a component that spreads its props onto an html element, e.g. `<button {...props} />`,
+    // would render the `ctx` prop it received for its form actions as an attribute
+    if let JSXAttrOrSpread::SpreadElement(spread) = node {
+      if !self.in_component_element && !spread.expr.is_object() {
+        let expr = std::mem::replace(
+          &mut spread.expr,
+          Box::new(Expr::Invalid(Invalid {
+            span: Default::default(),
+          })),
+        );
+        spread.expr = self.call("omitCtx", vec![expr]);
+      }
+    }
   }
 
   fn visit_mut_object_lit(&mut self, node: &mut ObjectLit) {
@@ -1989,6 +2004,20 @@ mod tests {
   /// Collapses whitespace so assertions don't depend on codegen formatting.
   fn compact(s: &str) -> String {
     s.split_whitespace().collect::<Vec<_>>().join(" ")
+  }
+
+  #[test]
+  fn omits_ctx_from_props_spread_onto_html_elements() {
+    let out = compact(&transform(
+      r#"
+      export default function Wrapper(props: any) {
+        return <><button {...props} /><Comp {...props} /><i {...{ a: 1 }} /></>;
+      }
+      "#,
+    ));
+    assert!(out.contains("<button {...omitCtx(props)}/>"), "{}", out);
+    assert!(out.contains("<Comp {...props}/>"), "{}", out);
+    assert!(out.contains("<i {...{ a: 1 }}/>"), "{}", out);
   }
 
   #[test]
