@@ -52,6 +52,12 @@ const LAZY_COMPILATION_PLUGIN_NAME: &str = "FarmPluginLazyCompilation";
 /// The lazy compilation plugin, which the host has in dev, is left out: it doesn't check whether
 /// lazy compilation is enabled, and it would turn every dynamic import into a request to the dev
 /// server through the farm runtime, which a client script doesn't have.
+///
+/// Client scripts are always tree shaken, but the tree shake plugin is an internal plugin that the
+/// host only has if it enables tree shaking itself (by default only in production), so it is
+/// added if the host doesn't have it. Otherwise every module that a handler imports would be
+/// bundled whole, along with everything that its unused exports import, and those modules would
+/// also count towards `client_banned_imports`.
 pub(crate) fn client_script_plugins(
   host_plugins: Vec<Arc<dyn Plugin>>,
   config: &Config,
@@ -65,6 +71,14 @@ pub(crate) fn client_script_plugins(
     })
     .collect::<Vec<_>>();
   plugins.push(Arc::new(resolve_plugin));
+
+  let tree_shake_plugin = farmfe_plugin_tree_shake::FarmPluginTreeShake::new(config);
+  if !plugins
+    .iter()
+    .any(|plugin| plugin.name() == tree_shake_plugin.name())
+  {
+    plugins.push(Arc::new(tree_shake_plugin));
+  }
   plugins.push(Arc::new(farmfe_plugin_minify::FarmPluginMinify::new(
     config,
   )));
@@ -604,5 +618,30 @@ mod tests {
     let names = plugin_names(&plugins);
     assert!(!names.contains(&"FarmPluginLazyCompilation"));
     assert!(names.contains(&"FarmPluginScript"));
+  }
+
+  #[test]
+  fn client_script_plugins_add_tree_shaking_once() {
+    let plugins = client_script_plugins(
+      vec![Arc::new(NamedPlugin("FarmPluginScript"))],
+      &Config::default(),
+    );
+    assert_eq!(
+      plugin_names(&plugins)
+        .iter()
+        .filter(|name| **name == "FarmPluginTreeShake")
+        .count(),
+      1
+    );
+
+    // the host enables tree shaking
+    let host_tree_shake: Arc<dyn Plugin> = Arc::new(NamedPlugin("FarmPluginTreeShake"));
+    let plugins = client_script_plugins(vec![host_tree_shake.clone()], &Config::default());
+    let tree_shake_plugins = plugins
+      .iter()
+      .filter(|plugin| plugin.name() == "FarmPluginTreeShake")
+      .collect::<Vec<_>>();
+    assert_eq!(tree_shake_plugins.len(), 1);
+    assert!(Arc::ptr_eq(tree_shake_plugins[0], &host_tree_shake));
   }
 }

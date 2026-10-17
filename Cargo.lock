@@ -498,6 +498,7 @@ dependencies = [
  "farmfe_macro_plugin",
  "farmfe_plugin_minify",
  "farmfe_plugin_resolve",
+ "farmfe_plugin_tree_shake",
  "farmfe_toolkit",
  "farmfe_toolkit_plugin_types",
  "hstr",
