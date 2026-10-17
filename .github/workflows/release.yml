@@ -4,8 +4,9 @@ on:
     branches:
       - main
 
+# the id-token permission that npm's OIDC publish needs is granted to the release job only, so that
+# the called CI jobs (dependency installs, cargo build scripts) don't get it
 permissions:
-  id-token: write  # Required for OIDC
   contents: read
 
 concurrency: ${{ github.workflow }}-${{ github.ref }}
@@ -20,6 +21,9 @@ jobs:
     name: Release
     needs: [call-ci]
     runs-on: ubuntu-latest
+    permissions:
+      id-token: write # Required for OIDC
+      contents: read
     steps:
       - name: Checkout Repo
         uses: actions/checkout@v4
