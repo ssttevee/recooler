@@ -27,6 +27,7 @@ use crate::{
   ids::ComponentHandlerIds,
   imports::UniqueImportIdentifiers,
   layouts::LayoutTree,
+  nested_compile::{nested_compile_input, shared_host_plugins},
   FarmPluginRecooler, GlobalIds,
 };
 
@@ -685,7 +686,8 @@ impl FarmPluginRecooler {
   ) -> Result<HashMap<PathBuf, Vec<Module>>> {
     let mut config = context.config.as_ref().clone();
     config.progress = false;
-    config.input = HashMap::from_iter(
+    config.input = nested_compile_input(
+      &context.config,
       source_paths
         .iter()
         .map(|sp| {
@@ -700,13 +702,12 @@ impl FarmPluginRecooler {
           }
         })
         .reduce(|a, b| Ok(a?.into_iter().chain(b?.into_iter()).collect()))
-        .unwrap()?
-        .into_iter(),
+        .unwrap()?,
     );
     config.persistent_cache = Box::new(self.trace_persistent_cache_config(&config));
     let canonical_path_map = config.input.clone();
 
-    let mut plugins = context.plugin_driver.plugins.clone();
+    let mut plugins = shared_host_plugins(context);
     plugins.push(Arc::new(TraceStubPlugin {
       src_dir: self.src_dir.clone(),
       routes_dir: self.routes_dir.clone(),

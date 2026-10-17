@@ -5,6 +5,7 @@ mod htmx;
 mod ids;
 mod imports;
 mod layouts;
+mod nested_compile;
 mod routes;
 
 use std::{
@@ -438,13 +439,15 @@ impl FarmPluginRecooler {
     *config.tree_shaking = BoolOrObj::Bool(true);
     *config.minify = BoolOrObj::Bool(true);
     *config.sourcemap = SourcemapConfig::Bool(false);
-    config.input = HashMap::new();
-    config.input.insert(
-      String::from("client"),
-      format!("{}{}", CLIENT_MODULE_PREFIX, module_id.relative_path()),
+    config.input = nested_compile::nested_compile_input(
+      &context.config,
+      [(
+        String::from("client"),
+        format!("{}{}", CLIENT_MODULE_PREFIX, module_id.relative_path()),
+      )],
     );
 
-    let mut plugins = context.plugin_driver.plugins.clone();
+    let mut plugins = nested_compile::shared_host_plugins(context);
     plugins.push(Arc::new(farmfe_plugin_minify::FarmPluginMinify::new(&config)) as _);
 
     let compiler = Compiler::new_without_internal_plugins(config, plugins)?;
