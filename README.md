@@ -136,7 +136,7 @@ Within in any component (page, layout, root, or other component) or head functio
 
 Route modules, layout modules, and the root component module may optionally export a `head` object (`RouteHead`) or function (`RouteHeadFn`), used to set the head elements for the page. If an object is exported, it will overwrite all prior head elements. If a function is exported, then the implementor will have access to the prior head object and may choose to extend or overwrite it. Head functions are applied out to in, starting from the root component, applying the head function from each layout module, and finally the route module. This means the route module's head export will have the final say on the head elements.
 
-The `head` export may be declared in any form, e.g. `export function head`, `export const head = ...` (with or without `as`/`satisfies`), `export { head }`, or `export { head } from "./head"`. If the plugin cannot tell at build time whether it is an object or a function (e.g. `export const head = makeHead()`), this is checked when the page is rendered.
+The `head` export may be declared in any form, e.g. `export function head`, `export const head = ...` (with or without `as`/`satisfies`), `export { head }`, or `export { head } from "./head"`. If the plugin cannot tell at build time whether it is an object or a function (e.g. `export const head = makeHead()`), this is checked when the page is rendered. `export *` re-exports and destructured exports (`export const { head } = ...`) are not detected.
 
 ```ts
 declare interface RouteHead {
@@ -164,7 +164,7 @@ Layout are implemented as "Higher Order Components", or HOCs, that wrap the page
 
 Regular hono middleware may be the default export of a middleware module to take effect for the particular route. The behavior is the same as calling `app.use("/route/*", middleware)` on a hono instance, so it also handles the requests to the paths under the route. The only special sauce from Recooler is the folder directory structure and ordering by file name.
 
-Middleware files placed directly in a group directory (i.e. a parenthesized directory name) will only apply to the routes in the group. This is unlike regular middleware which will handle all requests matching the prefix regardless of whether there is a route handler.
+Middleware files placed directly in a group directory (i.e. a parenthesized directory name) will only apply to the routes in the group, and to requests that match a group route's path but are handled by a later route (e.g. a form action of a layout that is handled by a catch-all). This is unlike regular middleware which will handle all requests matching the prefix regardless of whether there is a route handler.
 
 ### Form Actions
 
@@ -237,9 +237,9 @@ return (
 );
 ```
 
-Form actions are requested with an `action` query parameter on the page's url, so the `action` query parameter is reserved on every route that has form actions for the request's method (every route, once the root component has one). On those routes, requests without an `action` parameter are handled by the route's own handlers (e.g. `onPost`), and requests whose `action` does not name any form action of the app are rejected with a 404. Routes without form actions for the method pass the parameter through untouched.
+Form actions are requested with an `action` query parameter on the page's url, so the `action` query parameter is reserved on every route that has form actions for the request's method (every route, once the root component has one). On those routes, requests without an `action` parameter are handled by the route's own handlers (e.g. `onPost`), and requests whose `action` does not name any form action of the app are rejected with a 404. An `action` of another page is handled as if the parameter were absent, i.e. by the route's own handlers or a later matching route. Routes without form actions for the method pass the parameter through untouched.
 
-Form actions in a route module post to the path of the route, e.g. `/blog/my-post?action=...`, but those in any other module, such as a layout or the root component, render on many pages, so they post to the relative url `?action=...` to be handled by the current page. Like any relative url, it is resolved against the base url of the document, which is a known limitation: on a page with a `<base href>` (e.g. the `base` of a head function), it posts to the base url, and after the url changes without rendering the page again (e.g. with `hx-push-url` or `history.pushState`), it posts to the new url. Either fails unless that url is a page that renders the same action.
+Form actions in a route module post to the path of the route, e.g. `/blog/my-post?action=...`, but those in any other module, such as a layout or the root component, render on many pages, so they post to the relative url `?action=...` to be handled by the current page. Like any relative url, it is resolved against the base url of the document, which is a known limitation: on a page with a `<base href>` (e.g. the `base` of a head function), it posts to the base url, and after the url changes without rendering the page again (e.g. with `hx-push-url` or `history.pushState`), it posts to the new url. The request is then handled by the first matching route that renders the same action, otherwise by that url's own handlers (often a 404, or the page itself for `hx-get`).
 
 NOTE: Routes with path parameters must have `ctx` available as a prop. See [gotchas and workarounds](#form-actions-in-parameterized-routes).
 
