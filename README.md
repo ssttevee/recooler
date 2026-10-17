@@ -239,6 +239,8 @@ return (
 
 Form actions are requested with an `action` query parameter on the page's url. Requests without one are handled by the route's own handlers (e.g. `onPost`), and requests whose `action` does not name any form action of the app are rejected with a 404.
 
+Form actions in a route module post to the path of the route, e.g. `/blog/my-post?action=...`, but those in any other module, such as a layout or the root component, render on many pages, so they post to the relative url `?action=...` to be handled by the current page. Like any relative url, it is resolved against the base url of the document, which is a known limitation: on a page with a `<base href>` (e.g. the `base` of a head function), it posts to the base url, and after the url changes without rendering the page again (e.g. with `hx-push-url` or `history.pushState`), it posts to the new url. Either fails unless that url is a page that renders the same action.
+
 NOTE: Routes with path parameters must have `ctx` available as a prop. See [gotchas and workarounds](#form-actions-in-parameterized-routes).
 
 #### Captured variables
