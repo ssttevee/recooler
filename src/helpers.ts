@@ -529,9 +529,13 @@ export function renderHeadElements(
   );
 }
 
+// only attributes that are rendered count, like `charset={undefined}`, which renders nothing
 function hasCharsetMeta(head: RouteHead): boolean {
   return !!head.metas?.some((meta) =>
-    Object.keys(meta).some((key) => key.toLowerCase() === "charset"),
+    Object.entries(meta ?? {}).some(
+      ([key, value]) =>
+        key.toLowerCase() === "charset" && (!!value || value === 0),
+    ),
   );
 }
 

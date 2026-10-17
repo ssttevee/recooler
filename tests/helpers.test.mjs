@@ -193,6 +193,15 @@ describe("DefaultRootHOC", () => {
       assert.match(html, /<meta name="x" content="y"\/>/);
     }
   });
+
+  test("ignores charset attributes that render nothing and missing metas", async () => {
+    // e.g. `metas: [cond ? { charset: "..." } : undefined]`, which rendered fine before
+    for (const metas of [[undefined], [{ charset: undefined }], [{ charset: false }], [{ charset: "" }]]) {
+      const html = await getText(pageApp(buildHeadFn([], { metas })));
+      assert.equal(charsetCount(html), 1, html);
+      assert.match(html, /<meta charset="utf-8"\/>/);
+    }
+  });
 });
 
 describe("buildHeadFn", () => {
