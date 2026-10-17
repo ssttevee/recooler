@@ -1,4 +1,5 @@
 #![deny(clippy::all)]
+mod banned_imports;
 mod es_ast_helpers;
 mod head;
 mod htmx;
@@ -112,7 +113,16 @@ pub struct FarmPluginRecooler {
   option_errors: Vec<String>,
   /// compiled client scripts keyed by their generated entry source, so that
   /// routes with identical client entries are only compiled once per build
-  client_script_cache: Mutex<HashMap<String, String>>,
+  client_script_cache: Mutex<HashMap<String, CachedClientScript>>,
+}
+
+/// A client script compiled by [`FarmPluginRecooler::build_client_script`].
+struct CachedClientScript {
+  /// the script, or the banned modules that it includes, see
+  /// [`banned_imports::banned_client_modules`]
+  script: std::result::Result<String, Vec<String>>,
+  /// the routes that use the script
+  routes: Vec<String>,
 }
 
 static DEFAULT_ROUTE_HANDLER_IDENT: &str = "jsxRouteHandler";
@@ -477,31 +487,63 @@ impl FarmPluginRecooler {
 
     // the lock must not be held across the nested compile, which calls back
     // into this plugin instance
-    let cached = self
+    if let Some(cached) = self
       .client_script_cache
       .lock()
       .unwrap()
-      .get(&entry_source)
-      .cloned();
-    if let Some(client_script) = cached {
-      return Ok(Some(client_script));
+      .get_mut(&entry_source)
+    {
+      cached.routes.push(module_id.relative_path().to_string());
+      return Ok(cached.script.as_ref().ok().cloned());
     }
 
-    let client_script = self.compile_client_script(context, module_id)?;
-    self
+    let script = self.compile_client_script(context, module_id)?;
+    let client_script = script.as_ref().ok().cloned();
+    self.client_script_cache.lock().unwrap().insert(
+      entry_source,
+      CachedClientScript {
+        script,
+        routes: vec![module_id.relative_path().to_string()],
+      },
+    );
+
+    Ok(client_script)
+  }
+
+  /// Returns an error for the client scripts built by [`Self::build_client_script`] that include
+  /// banned modules, listing every route that uses each of them. Like the error of a failed nested
+  /// compile, it is a JSON array of messages (see [`error_messages`]), one per script.
+  fn banned_client_scripts_error(&self) -> Result<()> {
+    let mut errors = self
       .client_script_cache
       .lock()
       .unwrap()
-      .insert(entry_source, client_script.clone());
-
-    Ok(Some(client_script))
+      .values()
+      .filter_map(|cached| {
+        let banned = cached.script.as_ref().err()?;
+        Some(format!(
+          "client script for {} includes banned modules:\n  {}",
+          cached.routes.join(", "),
+          banned.join("\n  ")
+        ))
+      })
+      .collect::<Vec<_>>();
+    if errors.is_empty() {
+      return Ok(());
+    }
+    errors.sort();
+    Err(CompilationError::GenericError(
+      serde_json::to_string(&errors).unwrap(),
+    ))
   }
 
+  /// Compiles the client script of a route, or returns the banned modules that it includes, see
+  /// [`banned_imports::banned_client_modules`].
   fn compile_client_script(
     &self,
     context: &Arc<CompilationContext>,
     module_id: &ModuleId,
-  ) -> Result<String> {
+  ) -> Result<std::result::Result<String, Vec<String>>> {
     let mut config = context.config.as_ref().clone();
     config.progress = false;
     *config.tree_shaking = BoolOrObj::Bool(true);
@@ -524,33 +566,28 @@ impl FarmPluginRecooler {
 
     if !self.client_banned_imports.is_empty() {
       // catches banned modules imported indirectly through other source files
-      let mut banned = compiler
-        .context()
-        .module_graph
-        .read()
-        .modules()
-        .into_iter()
-        .map(|module| module.id.to_string())
-        .filter(|id| {
-          !id.starts_with(CLIENT_MODULE_PREFIX)
-            && self
-              .client_banned_imports
-              .iter()
-              .any(|pattern| pattern.is_match(id))
-        })
-        .collect::<Vec<_>>();
-      if !banned.is_empty() {
-        banned.sort();
-        return Err(CompilationError::GenericError(format!(
-          "client script for {} includes banned modules:\n  {}",
-          module_id.relative_path(),
-          banned.join("\n  ")
-        )));
+      let module_graph = compiler.context().module_graph.read();
+      if let Some(entry) = module_graph
+        .entries
+        .iter()
+        .find_map(|(id, name)| (name == "client").then_some(id))
+      {
+        let banned = banned_imports::banned_client_modules(&module_graph, entry, |id| {
+          self
+            .client_banned_imports
+            .iter()
+            .any(|pattern| pattern.is_match(&id.to_string()))
+        });
+        if !banned.is_empty() {
+          return Ok(Err(banned));
+        }
       }
     }
 
     let resource_map = compiler.context().resources_map.lock();
-    Ok(String::from_utf8(resource_map.get("client.js").unwrap().bytes.clone()).unwrap())
+    Ok(Ok(
+      String::from_utf8(resource_map.get("client.js").unwrap().bytes.clone()).unwrap(),
+    ))
   }
 
   fn generate_metadata_module(&self) -> Result<String> {
@@ -769,6 +806,8 @@ impl FarmPluginRecooler {
         &scan_result.route_plan(),
       )?
       .as_str();
+
+    self.banned_client_scripts_error()?;
 
     return Ok(
       format!(
