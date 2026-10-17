@@ -20,13 +20,32 @@ export function buildHeadFn(
   initial?: RouteHead,
 ): (ctx: Context) => Promise<RouteHead> {
   return async (ctx: Context) => {
-    let head = initial ?? {};
+    let head = initial ? copyHead(initial) : {};
     for (const headFn of headFns) {
       head = (await headFn(ctx, head)) ?? {};
     }
 
     return head;
   };
+}
+
+/**
+ * Copies an exported head object for a single request, so that head functions which modify
+ * `prev` in place do not change it for every later request. Element props are not copied.
+ */
+function copyHead(head: RouteHead): RouteHead {
+  const copy = { ...head };
+  if (head.metas) {
+    copy.metas = [...head.metas];
+  }
+  if (head.links) {
+    copy.links = [...head.links];
+  }
+  if (head.scripts) {
+    copy.scripts = [...head.scripts];
+  }
+
+  return copy;
 }
 
 export type JSXRouteHandlerFactory = (

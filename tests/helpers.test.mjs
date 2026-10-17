@@ -174,3 +174,48 @@ describe("DefaultRootHOC", () => {
     }
   });
 });
+
+describe("buildHeadFn", () => {
+  test("does not let head functions mutate the exported head object", async () => {
+    const head = {
+      title: "title",
+      metas: [{ name: "a", content: "a" }],
+      links: [{ rel: "icon", href: "/icon.png" }],
+      scripts: [{ src: "/a.js" }],
+    };
+    const snapshot = structuredClone(head);
+    const headFn = buildHeadFn(
+      [
+        (_ctx, prev) => {
+          prev.title += "!";
+          prev.metas.push({ name: "b", content: "b" });
+          prev.links.push({ rel: "stylesheet", href: "/b.css" });
+          prev.scripts.push({ src: "/b.js" });
+          return prev;
+        },
+      ],
+      head,
+    );
+    const app = pageApp(headFn);
+
+    for (let i = 0; i < 2; i++) {
+      const html = await getText(app);
+      assert.equal(html.match(/<title>title!<\/title>/g)?.length, 1, html);
+      assert.equal(html.match(/name="b"/g)?.length, 1, html);
+      assert.equal(html.match(/href="\/b\.css"/g)?.length, 1, html);
+      assert.equal(html.match(/src="\/b\.js"/g)?.length, 1, html);
+    }
+    assert.deepEqual(head, snapshot);
+  });
+
+  test("passes the exported head object's values through", async () => {
+    const head = { title: "t", base: "/base/", metas: [{ name: "a", content: "a" }] };
+    const headFn = buildHeadFn([], head);
+    const first = await headFn({});
+    assert.deepEqual(first, head);
+    assert.notEqual(first, head);
+    assert.notEqual(first.metas, head.metas);
+    // element props are not cloned
+    assert.equal(first.metas[0], head.metas[0]);
+  });
+});
