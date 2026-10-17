@@ -2732,4 +2732,27 @@ mod tests {
       r#"onLoad of src/routes/article/[id]/index.tsx imports banned module "../lib/fql" via onLoad"#
     );
   }
+  #[test]
+  fn ignores_dynamic_imports_without_a_static_specifier_or_outside_the_slice() {
+    let source = r#"
+      const lazy = (name) => import(`../lib/${name}`);
+      const resolve = () => require.resolve("faunadb");
+      function unused() { return import("faunadb"); }
+      const api = { load() { return import(`faunadb`); } };
+      export default function C() {
+        return <>
+          <button hx-on:click={() => lazy("fql")} />
+          <button hx-on:click={() => resolve()} />
+          <button hx-on:click={() => api.load()} />
+        </>;
+      }
+    "#;
+
+    // only the template literal without expressions in a method of a kept object
+    let err = try_slice(source, &["faunadb", "fql"]).unwrap_err();
+    assert_eq!(
+      err,
+      r#"event handler src/routes/article/[id]/index.tsx@2 imports banned module "faunadb" via _handler$2 → api"#
+    );
+  }
 }
