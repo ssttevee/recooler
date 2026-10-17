@@ -293,7 +293,7 @@ enum RouteSegmentKind {
 fn route_segment_kind(segment: &str) -> RouteSegmentKind {
   if !segment.starts_with(':') {
     RouteSegmentKind::Static
-  } else if segment.ends_with("{.+}") {
+  } else if segment.ends_with("{.+}") || segment.ends_with("{.*}") {
     RouteSegmentKind::CatchAll
   } else {
     RouteSegmentKind::Param
@@ -302,10 +302,10 @@ fn route_segment_kind(segment: &str) -> RouteSegmentKind {
 
 /// Orders hono paths so that a path goes before the paths that could match the same requests less
 /// specifically. The paths are compared segment by segment: a static segment goes before a
-/// `:param`, which goes before a `:catchAll{.+}`, and static segments are compared lexically. When
-/// one path is a prefix of the other, the shorter one goes first unless the prefix ends at a
-/// catch-all, which also matches the longer one's requests. Paths that are otherwise equal, such as
-/// those differing only in parameter names, are compared lexically.
+/// `:param`, which goes before a `:catchAll{.+}` (or `{.*}`), and static segments are compared
+/// lexically. When one path is a prefix of the other, the shorter one goes first unless the prefix
+/// ends at a catch-all, which also matches the longer one's requests. Paths that are otherwise
+/// equal, such as those differing only in parameter names, are compared lexically.
 pub(crate) fn compare_route_paths(a: &str, b: &str) -> Ordering {
   let mut a_segments = a.split('/').filter(|s| !s.is_empty());
   let mut b_segments = b.split('/').filter(|s| !s.is_empty());
@@ -1438,6 +1438,15 @@ mod tests {
     assert_eq!(
       compare_route_paths("/:rest{.+}/x", "/:rest{.+}"),
       Ordering::Less
+    );
+    // a `{.*}` param matches several segments too
+    assert_eq!(
+      compare_route_paths("/re/:id/edit", "/re/:p{.*}"),
+      Ordering::Less
+    );
+    assert_eq!(
+      compare_route_paths("/re/:p{.*}", "/re/:id"),
+      Ordering::Greater
     );
   }
 
