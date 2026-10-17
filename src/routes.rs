@@ -545,17 +545,41 @@ impl ScanResult {
   }
 }
 
+/// Extensions of the files that the route scan's trace compile loads with their actual content, see
+/// [`is_trace_stubbed`].
+const TRACE_SCRIPT_EXTENSIONS: [&str; 8] = ["js", "jsx", "ts", "tsx", "mjs", "cjs", "mts", "cts"];
+
+/// Version of the rules of [`is_trace_stubbed`], which is part of the trace compile's persistent
+/// cache namespace, see [`FarmPluginRecooler::trace_persistent_cache_config`]. It must be bumped
+/// whenever the rules change, or modules cached under the previous rules would be reused.
+const TRACE_STUB_RULES_VERSION: u32 = 2;
+
 /// Returns whether the route scan's trace compile loads the module as an empty script instead of
-/// its actual content. That is every file outside of `src_dir` and `routes_dir`: the scan never
-/// walks through them (see [`FarmPluginRecooler::list_dependencies_for_module`]) and they are not
-/// transformed by [`FarmPluginRecooler::process_module`], so loading and parsing them and their
-/// dependencies is wasted work. The checks are the same string prefix checks as there, on the
-/// full id including the query. Virtual modules don't have an absolute resolved path and are
-/// loaded as usual.
+/// its actual content. That is:
+///
+/// - every file outside of `src_dir` and `routes_dir`: the scan never walks through them (see
+///   [`FarmPluginRecooler::list_dependencies_for_module`]) and they are not transformed by
+///   [`FarmPluginRecooler::process_module`], so loading and parsing them and their dependencies is
+///   wasted work. The checks are the same string prefix checks as there, on the full id including
+///   the query.
+/// - every file that is not a script, by the extension of its resolved path, e.g. stylesheets: the
+///   scan only reads the handlers and exports of script modules, and running e.g. postcss on them
+///   is by far the most expensive part of the trace. Ids with a query, e.g. the
+///   [`crate::HANDLERS_MODULE_QUERY`] variant of a component, are decided by the resolved path too.
+///
+/// Virtual modules don't have an absolute resolved path and are loaded as usual.
 fn is_trace_stubbed(module_id: &str, resolved_path: &str, src_dir: &str, routes_dir: &str) -> bool {
-  Path::new(resolved_path).is_absolute()
-    && !module_id.starts_with(src_dir)
-    && !module_id.starts_with(routes_dir)
+  let resolved_path = Path::new(resolved_path);
+  if !resolved_path.is_absolute() {
+    return false;
+  }
+
+  let is_script = resolved_path
+    .extension()
+    .and_then(|ext| ext.to_str())
+    .is_some_and(|ext| TRACE_SCRIPT_EXTENSIONS.contains(&ext));
+
+  !is_script || (!module_id.starts_with(src_dir) && !module_id.starts_with(routes_dir))
 }
 
 /// Stubs out the modules of the route scan's trace compile that can't affect the scan result, see
@@ -603,7 +627,8 @@ impl FarmPluginRecooler {
   /// stubbed (see [`is_trace_stubbed`]), so they are cached in a namespace of their own that is
   /// never shared with the other compiles. Modules are looked up in the cache by timestamp before
   /// they are loaded, i.e. before it is decided whether to stub them, so the namespace also depends
-  /// on the options that decide it and that `process_module` depends on.
+  /// on the options and the version of the rules that decide it, and on the options that
+  /// `process_module` depends on.
   fn trace_persistent_cache_config(&self, config: &Config) -> PersistentCacheConfig {
     if !config.persistent_cache.enabled() {
       return PersistentCacheConfig::Bool(false);
@@ -614,7 +639,7 @@ impl FarmPluginRecooler {
       PersistentCacheConfig::Bool(_) => config.persistent_cache.as_obj(&config.root),
     };
     let options_hash = farmfe_toolkit::hash::sha256(
-      serde_json::to_string(&(&self.src_dir, &self.routes_dir))
+      serde_json::to_string(&(&self.src_dir, &self.routes_dir, TRACE_STUB_RULES_VERSION))
         .unwrap()
         .as_bytes(),
       8,
@@ -987,10 +1012,33 @@ mod tests {
       "src/routes/index.tsx",
       "/app/src/routes/index.tsx"
     ));
-    assert!(!stubbed("src/styles.css", "/app/src/styles.css"));
     assert!(!stubbed(
       "src/components/button.tsx?recooler-handlers",
       "/app/src/components/button.tsx"
+    ));
+    for ext in ["js", "jsx", "ts", "tsx", "mjs", "cjs", "mts", "cts"] {
+      assert!(!stubbed(
+        &format!("src/lib/util.{}", ext),
+        &format!("/app/src/lib/util.{}", ext)
+      ));
+    }
+    assert!(!stubbed("src/lib/util.ts?raw", "/app/src/lib/util.ts"));
+  }
+
+  #[test]
+  fn trace_stubs_non_script_files_in_src_dir() {
+    assert!(stubbed("src/styles.css", "/app/src/styles.css"));
+    assert!(stubbed(
+      "src/routes/_admin/index.css",
+      "/app/src/routes/_admin/index.css"
+    ));
+    assert!(stubbed("src/styles.css?inline", "/app/src/styles.css"));
+    assert!(stubbed("src/data.json", "/app/src/data.json"));
+    assert!(stubbed("src/icon.svg", "/app/src/icon.svg"));
+    assert!(stubbed("src/LICENSE", "/app/src/LICENSE"));
+    assert!(stubbed(
+      "src/components/button.tsx.css",
+      "/app/src/components/button.tsx.css"
     ));
   }
 
@@ -1005,6 +1053,12 @@ mod tests {
     assert!(is_trace_stubbed(
       "lib/util.ts",
       "/app/lib/util.ts",
+      "src",
+      "pages"
+    ));
+    assert!(is_trace_stubbed(
+      "pages/styles.css",
+      "/app/pages/styles.css",
       "src",
       "pages"
     ));
