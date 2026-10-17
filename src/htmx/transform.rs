@@ -1242,6 +1242,44 @@ fn ident_refs<N: VisitWith<IdentRefCollector> + ?Sized>(node: &N) -> Vec<Id> {
   refs.idents.iter().map(Ident::to_id).collect()
 }
 
+/// Collects the specifiers of the `import("...")` and `require("...")` calls in a node whose
+/// argument is a string literal, or a template literal without expressions.
+#[derive(Default)]
+struct DynamicImportCollector {
+  srcs: Vec<Atom>,
+}
+
+impl Visit for DynamicImportCollector {
+  noop_visit_type!();
+
+  fn visit_call_expr(&mut self, call: &CallExpr) {
+    let imports = match &call.callee {
+      Callee::Import(_) => true,
+      Callee::Expr(callee) => matches!(&**callee, Expr::Ident(ident) if ident.sym == "require"),
+      Callee::Super(_) => false,
+    };
+    if let (true, Some(ExprOrSpread { spread: None, expr })) = (imports, call.args.first()) {
+      let src = match &**expr {
+        Expr::Lit(Lit::Str(src)) => Some(&src.value),
+        Expr::Tpl(Tpl { exprs, quasis, .. }) if exprs.is_empty() => {
+          quasis.first().and_then(|quasi| quasi.cooked.as_ref())
+        }
+        _ => None,
+      };
+      if let Some(src) = src.filter(|src| !self.srcs.contains(src)) {
+        self.srcs.push(src.clone());
+      }
+    }
+    call.visit_children_with(self);
+  }
+}
+
+fn dynamic_imports<N: VisitWith<DynamicImportCollector> + ?Sized>(node: &N) -> Vec<Atom> {
+  let mut imports = DynamicImportCollector::default();
+  node.visit_with(&mut imports);
+  imports.srcs
+}
+
 /// A top level declaration, import specifier or var declarator that a handler slice may keep.
 struct SliceNode {
   /// Index of the module item.
@@ -1250,6 +1288,9 @@ struct SliceNode {
   part: Option<usize>,
   /// Identifiers referenced by the node, excluding those in types.
   refs: Vec<Id>,
+  /// Specifiers of the dynamic imports and `require` calls in the node, see
+  /// [`DynamicImportCollector`].
+  dynamic_imports: Vec<Atom>,
 }
 
 const ON_LOAD_EXPORT: &str = "onLoad";
@@ -1280,8 +1321,25 @@ struct SliceGraph {
 
 impl SliceGraph {
   fn add(&mut self, item: usize, part: Option<usize>, binds: Vec<Id>, refs: Vec<Id>) {
+    self.add_code(item, part, binds, refs, vec![]);
+  }
+
+  /// Adds a node with the dynamic imports in its code, see [`dynamic_imports`].
+  fn add_code(
+    &mut self,
+    item: usize,
+    part: Option<usize>,
+    binds: Vec<Id>,
+    refs: Vec<Id>,
+    dynamic_imports: Vec<Atom>,
+  ) {
     let node = self.nodes.len();
-    self.nodes.push(SliceNode { item, part, refs });
+    self.nodes.push(SliceNode {
+      item,
+      part,
+      refs,
+      dynamic_imports,
+    });
     for id in binds {
       self.bindings.entry(id).or_default().push(node);
     }
@@ -1289,24 +1347,49 @@ impl SliceGraph {
 
   fn add_decl(&mut self, item: usize, decl: &Decl) {
     match decl {
-      Decl::Fn(f) => self.add(item, None, vec![f.ident.to_id()], ident_refs(f)),
-      Decl::Class(c) => self.add(item, None, vec![c.ident.to_id()], ident_refs(c)),
+      Decl::Fn(f) => self.add_code(
+        item,
+        None,
+        vec![f.ident.to_id()],
+        ident_refs(f),
+        dynamic_imports(f),
+      ),
+      Decl::Class(c) => self.add_code(
+        item,
+        None,
+        vec![c.ident.to_id()],
+        ident_refs(c),
+        dynamic_imports(c),
+      ),
       Decl::Var(var) => {
         for (i, declarator) in var.decls.iter().enumerate() {
           let mut binds = vec![];
           pat_binding_idents(&declarator.name, &mut binds);
-          self.add(
+          self.add_code(
             item,
             Some(i),
             binds.iter().map(Ident::to_id).collect(),
             ident_refs(declarator),
+            dynamic_imports(declarator),
           );
         }
       }
-      Decl::TsEnum(e) => self.add(item, None, vec![e.id.to_id()], ident_refs(e)),
+      Decl::TsEnum(e) => self.add_code(
+        item,
+        None,
+        vec![e.id.to_id()],
+        ident_refs(e),
+        dynamic_imports(e),
+      ),
       Decl::TsModule(m) => {
         if let TsModuleName::Ident(id) = &m.id {
-          self.add(item, None, vec![id.to_id()], ident_refs(m));
+          self.add_code(
+            item,
+            None,
+            vec![id.to_id()],
+            ident_refs(m),
+            dynamic_imports(m),
+          );
         }
       }
       // types are erased, and top level `using` declarations are not supported
@@ -1355,7 +1438,9 @@ fn exports_on_load(specifier: &ExportSpecifier) -> bool {
 /// code of the module.
 ///
 /// Everything else is dropped, including the components, form actions and top level side effects.
-/// Kept imports whose specifier matches one of `banned_imports` are reported as errors.
+/// Kept imports, including the dynamic imports and `require` calls in the kept code (see
+/// [`DynamicImportCollector`]), whose specifier matches one of `banned_imports` are reported as
+/// errors.
 pub(crate) fn slice_handler_module(
   module_id: &ModuleId,
   global_ids: &crate::GlobalIds,
@@ -1372,8 +1457,11 @@ pub(crate) fn slice_handler_module(
   // module items and export specifiers that keep their `export` because they export `onLoad`
   let mut on_load_items = HashSet::new();
   let mut on_load_specifiers = HashSet::new();
+  // the dynamic imports in the event handlers, by root
+  let mut handler_dynamic_imports = vec![];
   for (i, item) in swc_module.body.iter().enumerate() {
     if let Some(declarator) = handler_export(item) {
+      handler_dynamic_imports.push((roots.len(), dynamic_imports(item)));
       ref_seeds.push((roots.len(), ident_refs(item)));
       roots.push(SliceRoot::Handler(
         declarator.name.as_ident().unwrap().id.sym.clone(),
@@ -1467,7 +1555,13 @@ pub(crate) fn slice_handler_module(
         })
         | DefaultDecl::Class(ClassExpr {
           ident: Some(ident), ..
-        }) => graph.add(i, None, vec![ident.to_id()], ident_refs(&export.decl)),
+        }) => graph.add_code(
+          i,
+          None,
+          vec![ident.to_id()],
+          ident_refs(&export.decl),
+          dynamic_imports(&export.decl),
+        ),
         _ => {}
       },
       ModuleItem::Stmt(Stmt::Decl(decl)) => graph.add_decl(i, decl),
@@ -1526,6 +1620,11 @@ pub(crate) fn slice_handler_module(
     .map(|(node, _)| (node.item, node.part))
     .collect::<HashSet<_>>();
 
+  let root_name = |root: usize| match &roots[root] {
+    SliceRoot::Handler(export_name) => export_name.to_string(),
+    SliceRoot::OnLoad => ON_LOAD_EXPORT.to_string(),
+  };
+
   let chain = |node: usize| {
     let mut names = vec![];
     let mut current = Some(node);
@@ -1535,19 +1634,54 @@ pub(crate) fn slice_handler_module(
       current = reach.from;
     }
     let root = reached[node].as_ref().unwrap().root;
-    names.push(match &roots[root] {
-      SliceRoot::Handler(export_name) => export_name.to_string(),
-      SliceRoot::OnLoad => ON_LOAD_EXPORT.to_string(),
-    });
+    names.push(root_name(root));
     names.reverse();
     (root, names.join(" → "))
   };
 
+  let banned = |src: &str| banned_imports.iter().any(|pattern| pattern.is_match(src));
+  let banned_error = |root: usize, src: &str, chain: &str| {
+    let exporter = match &roots[root] {
+      SliceRoot::Handler(export_name) => format!(
+        "event handler {}",
+        global_ids
+          .event_handler_ids
+          .existing_id(module_id, export_name)
+          .cloned()
+          .unwrap_or_else(|| format!("{}#{}", module_id.relative_path(), export_name)),
+      ),
+      SliceRoot::OnLoad => format!("{} of {}", ON_LOAD_EXPORT, module_id.relative_path()),
+    };
+    format!(
+      "{} imports banned module {} via {}",
+      exporter,
+      serde_json::to_string(src).unwrap(),
+      chain,
+    )
+  };
+
   let mut errors = vec![];
+  for (root, srcs) in &handler_dynamic_imports {
+    for src in srcs.iter().filter(|src| banned(src)) {
+      errors.push(banned_error(*root, src, &root_name(*root)));
+    }
+  }
   let mut reported = HashSet::new();
   for (node, reach) in reached.iter().enumerate() {
+    if reach.is_none() {
+      continue;
+    }
+    for src in graph.nodes[node]
+      .dynamic_imports
+      .iter()
+      .filter(|src| banned(src))
+    {
+      let (root, chain) = chain(node);
+      errors.push(banned_error(root, src, &chain));
+    }
+
     let item = graph.nodes[node].item;
-    if reach.is_none() || reported.contains(&item) {
+    if reported.contains(&item) {
       continue;
     }
     let src = match &swc_module.body[item] {
@@ -1561,26 +1695,10 @@ pub(crate) fn slice_handler_module(
       },
       _ => continue,
     };
-    if banned_imports.iter().any(|pattern| pattern.is_match(src)) {
+    if banned(src) {
       reported.insert(item);
       let (root, chain) = chain(node);
-      let exporter = match &roots[root] {
-        SliceRoot::Handler(export_name) => format!(
-          "event handler {}",
-          global_ids
-            .event_handler_ids
-            .existing_id(module_id, export_name)
-            .cloned()
-            .unwrap_or_else(|| format!("{}#{}", module_id.relative_path(), export_name)),
-        ),
-        SliceRoot::OnLoad => format!("{} of {}", ON_LOAD_EXPORT, module_id.relative_path()),
-      };
-      errors.push(format!(
-        "{} imports banned module {} via {}",
-        exporter,
-        serde_json::to_string(src.as_str()).unwrap(),
-        chain,
-      ));
+      errors.push(banned_error(root, src, &chain));
     }
   }
   if !errors.is_empty() {
@@ -2562,6 +2680,53 @@ mod tests {
     );
 
     let err = try_slice(r#"export { onLoad } from "../lib/fql";"#, &["/fql$"]).unwrap_err();
+    assert_eq!(
+      err,
+      r#"onLoad of src/routes/article/[id]/index.tsx imports banned module "../lib/fql" via onLoad"#
+    );
+  }
+
+  #[test]
+  fn reports_banned_dynamic_imports_and_requires() {
+    let source = r#"
+      async function load() {
+        const { query } = await import("../lib/fql");
+        return query();
+      }
+      const legacy = () => require(`faunadb`);
+      export default function C({ name }) {
+        import("../lib/server-only");
+        return <>
+          <button hx-on:click={() => import("faunadb")} />
+          <button hx-on:click={() => load()} />
+          <button hx-on:click={() => legacy()} />
+          <button hx-on:click={() => import(name)} />
+        </>;
+      }
+    "#;
+
+    let err = try_slice(source, &["/fql$", "^faunadb$", "server-only"]).unwrap_err();
+    assert_eq!(
+      err.lines().collect::<Vec<_>>(),
+      vec![
+        r#"event handler src/routes/article/[id]/index.tsx@0 imports banned module "faunadb" via _handler$0"#,
+        r#"event handler src/routes/article/[id]/index.tsx@1 imports banned module "../lib/fql" via _handler$1 → load"#,
+        r#"event handler src/routes/article/[id]/index.tsx@2 imports banned module "faunadb" via _handler$2 → legacy"#,
+      ]
+    );
+
+    // the dynamic imports of the dropped component are not reported
+    assert!(try_slice(source, &["server-only"]).is_ok());
+
+    let err = try_slice(
+      r#"
+        export async function onLoad() {
+          await import("../lib/fql");
+        }
+      "#,
+      &["/fql$"],
+    )
+    .unwrap_err();
     assert_eq!(
       err,
       r#"onLoad of src/routes/article/[id]/index.tsx imports banned module "../lib/fql" via onLoad"#
