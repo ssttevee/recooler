@@ -164,7 +164,7 @@ Layout are implemented as "Higher Order Components", or HOCs, that wrap the page
 
 Regular hono middleware may be the default export of a middleware module to take effect for the particular route. The behavior is the same as calling `app.use("/route/*", middleware)` on a hono instance, so it also handles the requests to the paths under the route. The only special sauce from Recooler is the folder directory structure and ordering by file name.
 
-Middleware files placed directly in a group directory (i.e. a parenthesized directory name) will only apply to the routes in the group, and to requests that match a group route's path but are handled by a later route (e.g. a form action of a layout that is handled by a catch-all). This is unlike regular middleware which will handle all requests matching the prefix regardless of whether there is a route handler.
+Middleware files placed directly in a group directory (i.e. a parenthesized directory name) will only apply to the requests handled by the routes in the group, including the routes of nested groups. This is unlike regular middleware which will handle all requests matching the prefix regardless of whether there is a route handler. Middleware runs from the shallowest directory to the deepest, counting group directories, so the middleware of a group runs before the middleware of the directories inside the group.
 
 ### Form Actions
 

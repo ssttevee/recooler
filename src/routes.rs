@@ -80,17 +80,27 @@ pub(crate) struct RootComponentInfo {
 pub(crate) struct PlannedRoute<'a> {
   /// the hono path of the route, i.e. its route path without the groups
   pub(crate) path: String,
-  /// the middleware placed directly in the directories of the groups enclosing the route,
-  /// outermost group first
-  pub(crate) group_middleware: Vec<ModuleId>,
   pub(crate) route: &'a RouteInfo,
+}
+
+/// A middleware registration of the hono app.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct PlannedMiddleware {
+  /// the path the middleware is used for, i.e. `*` or a `/prefix/*`
+  pub(crate) use_path: String,
+  pub(crate) module_id: ModuleId,
+  /// for the middleware placed directly in a group directory, the hono paths of the group's routes
+  /// that it is restricted to at runtime (see `groupMiddleware` in the helpers); `None` for the
+  /// middleware of other directories, which handles every request under its directory
+  pub(crate) routes: Option<Vec<String>>,
 }
 
 /// The routes and middleware of a [`ScanResult`] in the order they are registered on the hono app.
 pub(crate) struct RoutePlan<'a> {
-  /// `(use path, module id)` of the middleware that isn't placed directly in a group directory,
-  /// which handles every request under its directory, so it is registered before every route
-  pub(crate) middlewares: Vec<(String, ModuleId)>,
+  /// every middleware, registered before every route and ordered from the shallowest directory to
+  /// the deepest (counting group directories), so that the middleware of a group runs before the
+  /// middleware of the directories inside the group
+  pub(crate) middlewares: Vec<PlannedMiddleware>,
   /// sorted with [`compare_route_paths`] so that hono matches a route before any route that would
   /// otherwise shadow it
   pub(crate) routes: Vec<PlannedRoute<'a>>,
@@ -110,36 +120,34 @@ impl FarmPluginRecooler {
     let mut middlewares = String::new();
     let mut handlers = String::new();
 
-    for (use_path, module_id) in &plan.middlewares {
+    for PlannedMiddleware {
+      use_path,
+      module_id,
+      routes,
+    } in &plan.middlewares
+    {
+      let middleware = import_idents.identifier(module_id, "default");
       middlewares += format!(
         "{}.use({}, {});\n",
         hono_ident,
         serde_json::to_string(use_path).unwrap(),
-        import_idents.identifier(module_id, "default"),
+        match routes {
+          // group middleware only applies to the routes of the group, which is decided at runtime
+          // from the route that handles the request, since a `use` path alone would also match the
+          // requests of the routes of other groups that are shadowed by this group's routes
+          Some(routes) => format!(
+            "groupMiddleware({}, {})",
+            serde_json::to_string(routes).unwrap(),
+            middleware
+          ),
+          None => middleware,
+        },
       )
       .as_str();
     }
 
-    for PlannedRoute {
-      path,
-      group_middleware,
-      route,
-    } in &plan.routes
-    {
+    for PlannedRoute { path, route } in &plan.routes {
       let pathjs = serde_json::to_string(path).unwrap();
-
-      // group middleware only applies to the routes of the group, so rather than for every
-      // request under a prefix, it is used for the exact path of each of the group's routes, right
-      // before the route's own handlers so that it doesn't run for the routes registered earlier
-      for module_id in group_middleware {
-        handlers += format!(
-          "{}.use({}, {});\n",
-          hono_ident,
-          pathjs,
-          import_idents.identifier(module_id, "default"),
-        )
-        .as_str();
-      }
 
       let mut route_params_prefix = pathjs.clone() + ", ";
       let mut hono_app_obj = hono_ident.clone();
@@ -337,11 +345,6 @@ pub(crate) fn compare_route_paths(a: &str, b: &str) -> Ordering {
   }
 }
 
-/// Returns the number of segments of a hono path.
-fn route_path_depth(path: &str) -> usize {
-  path.split('/').filter(|s| !s.is_empty()).count()
-}
-
 /// Returns whether a path segment is a group, i.e. a parenthesized directory name.
 fn is_group_segment(segment: &str) -> bool {
   segment.len() > 2
@@ -364,23 +367,6 @@ impl ScanResult {
   /// Returns the routes and middleware in hono registration order. Every route is registered on the
   /// same hono app, so that routes of different groups are ordered among each other too.
   pub(crate) fn route_plan(&self) -> RoutePlan<'_> {
-    let mut middlewares = self
-      .middlewares
-      .iter()
-      // middleware placed directly in a group directory is in `PlannedRoute::group_middleware`
-      .filter(|(path, _)| !path.rsplit('/').next().is_some_and(is_group_segment))
-      .map(|(path, module_ids)| (route_path_without_groups(path), path, module_ids))
-      .collect::<Vec<_>>();
-    // the middleware of a directory runs before that of the directories below it, which a
-    // `[param]` directory's middleware also matches the requests of, e.g. `/:id/*` matches those of
-    // `/admin/users/*`, so shallower directories go first regardless of their specificity
-    middlewares.sort_by(|a, b| {
-      route_path_depth(&a.0)
-        .cmp(&route_path_depth(&b.0))
-        .then_with(|| compare_route_paths(&a.0, &b.0))
-        .then_with(|| a.1.cmp(b.1))
-    });
-
     let mut routes = self
       .routes
       .iter()
@@ -389,10 +375,55 @@ impl ScanResult {
     // routes with the same hono path, from different groups, are ordered by their group names
     routes.sort_by(|a, b| compare_route_paths(&a.0, &b.0).then_with(|| a.1.cmp(b.1)));
 
+    // the first route of a hono path is the one hono matches, so only it gets its group's middleware
+    let mut matched_routes = HashMap::<&str, &str>::new();
+    for (hono_path, path, _) in &routes {
+      matched_routes.entry(hono_path).or_insert(path);
+    }
+
+    let mut middlewares = self
+      .middlewares
+      .iter()
+      .map(|(dir_path, module_ids)| {
+        let depth = dir_path.split('/').filter(|s| !s.is_empty()).count();
+        let is_group = dir_path.rsplit('/').next().is_some_and(is_group_segment);
+        let (hono_path, routes) = if is_group {
+          // the middleware of a group is used for the prefix of the directory containing the group,
+          // and restricted to the group's routes at runtime
+          let parent = &dir_path[..dir_path.rfind('/').unwrap_or(0)];
+          let mut group_routes = matched_routes
+            .iter()
+            .filter(|(_, path)| {
+              **path == dir_path.as_str() || path.starts_with(&format!("{}/", dir_path))
+            })
+            .map(|(hono_path, _)| hono_path.to_string())
+            .collect::<Vec<_>>();
+          group_routes.sort();
+          (route_path_without_groups(parent), Some(group_routes))
+        } else {
+          (route_path_without_groups(dir_path), None)
+        };
+        (depth, is_group, hono_path, dir_path, module_ids, routes)
+      })
+      .collect::<Vec<_>>();
+    // the middleware of a directory runs before that of the directories below it, which a
+    // `[param]` directory's middleware also matches the requests of, e.g. `/:id/*` matches those of
+    // `/admin/users/*`, so shallower directories go first regardless of their specificity. Group
+    // directories count, so that the middleware of a group runs before the middleware of the
+    // directories inside the group, and at the same depth the middleware of a plain directory runs
+    // before that of a group, as it did when groups were separate hono apps
+    middlewares.sort_by(|a, b| {
+      a.0
+        .cmp(&b.0)
+        .then_with(|| a.1.cmp(&b.1))
+        .then_with(|| compare_route_paths(&a.2, &b.2))
+        .then_with(|| a.3.cmp(b.3))
+    });
+
     RoutePlan {
       middlewares: middlewares
         .into_iter()
-        .flat_map(|(hono_path, _, module_ids)| {
+        .flat_map(|(_, _, hono_path, _, module_ids, routes)| {
           let use_path = if hono_path == "/" {
             String::from("*")
           } else {
@@ -403,40 +434,21 @@ impl ScanResult {
           module_ids.sort();
           module_ids
             .into_iter()
-            .map(move |module_id| (use_path.clone(), module_id))
+            .map(move |module_id| PlannedMiddleware {
+              use_path: use_path.clone(),
+              module_id,
+              routes: routes.clone(),
+            })
         })
         .collect(),
       routes: routes
         .into_iter()
-        .map(|(hono_path, path, route)| PlannedRoute {
+        .map(|(hono_path, _, route)| PlannedRoute {
           path: hono_path,
-          group_middleware: self.group_middleware(path),
           route,
         })
         .collect(),
     }
-  }
-
-  /// Returns the middleware placed directly in the directories of the groups enclosing the route
-  /// at `path`, outermost group first.
-  fn group_middleware(&self, path: &str) -> Vec<ModuleId> {
-    let mut group_middleware = vec![];
-    let mut prefix = String::new();
-
-    for segment in path.split('/').filter(|s| !s.is_empty()) {
-      prefix += "/";
-      prefix += segment;
-
-      if is_group_segment(segment) {
-        if let Some(module_ids) = self.middlewares.get(&prefix) {
-          let mut module_ids = module_ids.iter().cloned().collect::<Vec<_>>();
-          module_ids.sort();
-          group_middleware.extend(module_ids);
-        }
-      }
-    }
-
-    group_middleware
   }
 }
 
@@ -1388,16 +1400,25 @@ mod tests {
     result
   }
 
-  /// `(hono path, route module, group middleware modules)` in registration order
-  fn planned_routes(plan: &RoutePlan) -> Vec<(String, String, Vec<String>)> {
+  /// `(hono path, route module)` in registration order
+  fn planned_routes(plan: &RoutePlan) -> Vec<(String, String)> {
     plan
       .routes
       .iter()
-      .map(|r| {
+      .map(|r| (r.path.clone(), r.route.module_id.to_string()))
+      .collect()
+  }
+
+  /// `(use path, middleware module, group routes)` in registration order
+  fn planned_middlewares(plan: &RoutePlan) -> Vec<(String, String, Option<Vec<String>>)> {
+    plan
+      .middlewares
+      .iter()
+      .map(|m| {
         (
-          r.path.clone(),
-          r.route.module_id.to_string(),
-          r.group_middleware.iter().map(|m| m.to_string()).collect(),
+          m.use_path.clone(),
+          m.module_id.to_string(),
+          m.routes.clone(),
         )
       })
       .collect()
@@ -1540,36 +1561,40 @@ mod tests {
 
     let mw = |path: &str| format!("src/routes{}/middleware.ts", path);
     let route = |path: &str| format!("src/routes{}/index.tsx", path);
+    let routes = |paths: &[&str]| Some(paths.iter().map(|p| p.to_string()).collect::<Vec<_>>());
+    // from the shallowest directory to the deepest, counting groups, plain directories before
+    // groups at the same depth, and group middleware restricted to the group's routes
     assert_eq!(
-      plan.middlewares,
+      planned_middlewares(&plan),
       [
-        (String::from("*"), ModuleId::from(mw("/").as_str())),
+        ("*", mw("/"), None),
         (
-          String::from("/docs/*"),
-          ModuleId::from(mw("/(m)/docs").as_str())
+          "*",
+          mw("/(a)"),
+          routes(&["/:rest{.+}", "/docs/:slug", "/nested"])
         ),
+        ("/docs/*", mw("/(m)/docs"), None),
+        ("*", mw("/(a)/(b)"), routes(&["/nested"])),
+        ("/foo/*", mw("/foo/(g)"), routes(&["/foo", "/foo/bar"])),
       ]
+      .map(|(path, mw, routes)| (path.to_string(), mw, routes))
     );
     assert_eq!(
       planned_routes(&plan),
       [
-        ("/", route("/"), vec![]),
-        ("/docs/new", route("/(m)/docs/new"), vec![]),
-        ("/docs/:slug", route("/(a)/docs/:slug"), vec![mw("/(a)")]),
-        ("/foo", route("/foo/(g)"), vec![mw("/foo/(g)")]),
-        ("/foo/bar", route("/foo/(g)/bar"), vec![mw("/foo/(g)")]),
-        (
-          "/nested",
-          route("/(a)/(b)/nested"),
-          vec![mw("/(a)"), mw("/(a)/(b)")]
-        ),
-        ("/plain", route("/plain"), vec![]),
-        ("/top/new", route("/top/new"), vec![]),
-        ("/top/:id", route("/top/:id"), vec![]),
-        ("/zed", route("/(z)/zed"), vec![]),
-        ("/:rest{.+}", route("/(a)/:rest{.+}"), vec![mw("/(a)")]),
+        ("/", route("/")),
+        ("/docs/new", route("/(m)/docs/new")),
+        ("/docs/:slug", route("/(a)/docs/:slug")),
+        ("/foo", route("/foo/(g)")),
+        ("/foo/bar", route("/foo/(g)/bar")),
+        ("/nested", route("/(a)/(b)/nested")),
+        ("/plain", route("/plain")),
+        ("/top/new", route("/top/new")),
+        ("/top/:id", route("/top/:id")),
+        ("/zed", route("/(z)/zed")),
+        ("/:rest{.+}", route("/(a)/:rest{.+}")),
       ]
-      .map(|(path, route, mw)| (path.to_string(), route, mw))
+      .map(|(path, route)| (path.to_string(), route))
     );
   }
 
@@ -1607,7 +1632,7 @@ mod tests {
       plan
         .middlewares
         .iter()
-        .map(|m| m.0.as_str())
+        .map(|m| m.use_path.as_str())
         .collect::<Vec<_>>(),
       ["*", "/admin/*"]
     );
@@ -1621,22 +1646,20 @@ mod tests {
     );
 
     assert_eq!(
-      result
-        .route_plan()
-        .middlewares
-        .iter()
-        .map(|(path, module_id)| (path.as_str(), module_id.to_string()))
+      planned_middlewares(&result.route_plan())
+        .into_iter()
+        .map(|(path, module_id, _)| (path, module_id))
         .collect::<Vec<_>>(),
       [
         ("*", "src/routes//middleware.ts"),
-        // the middleware of a `[param]` directory goes before that of deeper directories, whose
-        // requests it matches too
-        ("/admin/*", "src/routes/(s)/admin/middleware.ts"),
         ("/admin/*", "src/routes/admin/middleware.ts"),
+        // the middleware of a `[param]` directory goes before that of deeper directories, whose
+        // requests it matches too, and the group directory counts for the depth
         ("/:id/*", "src/routes/:id/middleware.ts"),
+        ("/admin/*", "src/routes/(s)/admin/middleware.ts"),
         ("/admin/sub/*", "src/routes/admin/sub/middleware.ts"),
       ]
-      .map(|(path, module_id)| (path, module_id.to_string()))
+      .map(|(path, module_id)| (path.to_string(), module_id.to_string()))
     );
   }
 

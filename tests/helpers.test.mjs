@@ -4,7 +4,7 @@ import { register } from "node:module";
 import { Hono } from "hono";
 
 register("./extensionless-hooks.mjs", import.meta.url);
-const { actionsMiddleware, buildHeadFn, DefaultRootHOC, jsxRouteHandler } = await import(
+const { actionsMiddleware, buildHeadFn, DefaultRootHOC, groupMiddleware, jsxRouteHandler } = await import(
   "../src/helpers.js"
 );
 const { createElement } = await import("easy-jsx-html-engine");
@@ -174,6 +174,39 @@ async function getText(app, path = "/") {
   assert.equal(res.status, 200);
   return res.text();
 }
+
+describe("groupMiddleware", () => {
+  function app() {
+    const trace = [];
+    const mw = (name) => async (ctx, next) => {
+      trace.push(name);
+      await next();
+    };
+    const app = new Hono({ strict: true });
+    app.use("*", mw("root"));
+    app.use("*", groupMiddleware(["/docs/:slug", "/:rest{.+}"], mw("group")));
+    app.use("/docs/*", mw("docs"));
+    app.get("/docs/new", (ctx) => ctx.text("new"));
+    app.get("/docs/:slug", (ctx) => ctx.text("slug"));
+    app.get("/plain", (ctx) => ctx.text("plain"));
+    app.get("/:rest{.+}", (ctx) => ctx.text("rest"));
+    return { app, trace };
+  }
+
+  test("runs only for requests handled by the group's routes, before deeper middleware", async () => {
+    for (const [path, body, expected] of [
+      ["/docs/x", "slug", ["root", "group", "docs"]],
+      ["/docs/new", "new", ["root", "docs"]],
+      ["/plain", "plain", ["root"]],
+      ["/a/b", "rest", ["root", "group"]],
+    ]) {
+      const { app: a, trace } = app();
+      const res = await a.request(path);
+      assert.equal(await res.text(), body);
+      assert.deepEqual(trace, expected, path);
+    }
+  });
+});
 
 describe("DefaultRootHOC", () => {
   function charsetCount(html) {

@@ -825,7 +825,7 @@ impl FarmPluginRecooler {
       format!(
         r#"
         import {{ Hono }} from "hono";
-        import {{ actionsMiddleware, buildHeadFn, configureActions, makeCloudflarePagesHandler }} from "farm-plugin-recooler/helpers";
+        import {{ actionsMiddleware, buildHeadFn, configureActions, groupMiddleware, makeCloudflarePagesHandler }} from "farm-plugin-recooler/helpers";
         {}
         {}
 

@@ -515,6 +515,27 @@ export function actionsMiddleware(
   };
 }
 
+/**
+ * Restricts the middleware of a route group to the requests that are handled by one of the
+ * group's routes, given as hono paths.
+ *
+ * The route that handles a request is taken to be the first matched handler that isn't a `use`
+ * middleware (whose paths end with `*`), so a route that falls through to a later route with
+ * `next()` still counts as the handling route.
+ */
+export function groupMiddleware(
+  routes: string[],
+  middleware: MiddlewareHandler,
+): MiddlewareHandler {
+  const paths = new Set(routes);
+  return (ctx, next) => {
+    const route = ctx.req.matchedRoutes.find((r) => !r.path.endsWith("*"));
+    return route !== undefined && paths.has(route.path)
+      ? middleware(ctx, next)
+      : next();
+  };
+}
+
 export function makeCloudflarePagesHandler(
   app: Hono,
 ): (ctx: unknown) => Promise<Response> | Response {
