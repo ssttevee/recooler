@@ -43,7 +43,7 @@ pub enum RouteHandlerFactoryInput {
   Tuple2((String, Option<String>)),
 }
 
-#[derive(serde::Deserialize)]
+#[derive(Default, serde::Deserialize)]
 pub struct RecoolerOptions {
   pub src_dir: Option<String>,
   pub routes_dir: Option<String>,
@@ -82,9 +82,13 @@ static DEFAULT_ROUTE_HANDLER_IDENT: &str = "jsxRouteHandler";
 
 impl FarmPluginRecooler {
   fn new(_config: &Config, options_str: String) -> Self {
-    let options: RecoolerOptions = serde_json::from_str(&options_str).unwrap();
-
     let mut option_errors = vec![];
+
+    let options = serde_json::from_str::<RecoolerOptions>(&options_str).unwrap_or_else(|e| {
+      option_errors.push(e.to_string());
+      Default::default()
+    });
+
     let mut client_banned_imports = vec![];
     for pattern in options.client_banned_imports.unwrap_or_default() {
       match Regex::new(&pattern) {
