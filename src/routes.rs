@@ -341,7 +341,7 @@ fn is_group_segment(segment: &str) -> bool {
 }
 
 /// Returns the hono path of a route path, i.e. the route path without the groups.
-fn route_path_without_groups(path: &str) -> String {
+pub(crate) fn route_path_without_groups(path: &str) -> String {
   let segments = path
     .split('/')
     .filter(|s| !s.is_empty() && !is_group_segment(s))

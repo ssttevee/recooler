@@ -28,7 +28,7 @@ use farmfe_core::{
   serde_json,
 };
 use farmfe_macro_plugin::farm_plugin;
-use farmfe_toolkit::{lazy_static::lazy_static, swc_atoms::AtomStore};
+use farmfe_toolkit::swc_atoms::AtomStore;
 
 use htmx::FormActionMethod;
 use ids::GlobalIds;
@@ -396,14 +396,10 @@ impl Plugin for FarmPluginRecooler {
   }
 }
 
-lazy_static! {
-  static ref ROUTE_PATH_GROUP_SEGMENT_PATTERN: Regex = Regex::new(r"/\([\d\w_-]+\)").unwrap();
-}
-
-fn strip_path_route_groups(path: &String) -> String {
-  ROUTE_PATH_GROUP_SEGMENT_PATTERN
-    .replace_all(path.as_str(), "")
-    .to_string()
+/// removes the route group components from a route path, using the same rule as the route
+/// registration so that the paths always agree with the registered routes
+fn strip_path_route_groups(path: &str) -> String {
+  routes::route_path_without_groups(path)
 }
 
 impl FarmPluginRecooler {
@@ -773,5 +769,28 @@ impl FarmPluginRecooler {
       )
       .to_string(),
     );
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::strip_path_route_groups;
+
+  #[test]
+  fn strips_every_group_that_route_registration_treats_as_a_group() {
+    assert_eq!(strip_path_route_groups("/(a)/x"), "/x");
+    assert_eq!(strip_path_route_groups("/(a.b)/x"), "/x");
+    assert_eq!(strip_path_route_groups("/(v2.0)/(c)/y"), "/y");
+    assert_eq!(strip_path_route_groups("/a/(b c)/(d+e)/:id"), "/a/:id");
+    assert_eq!(strip_path_route_groups("/x/(a.b)"), "/x");
+    assert_eq!(strip_path_route_groups("/(a)"), "/");
+    assert_eq!(strip_path_route_groups("/(a)/(b)"), "/");
+    assert_eq!(strip_path_route_groups("/"), "/");
+  }
+
+  #[test]
+  fn keeps_parentheses_that_are_not_a_whole_path_component() {
+    assert_eq!(strip_path_route_groups("/(a)b/x"), "/(a)b/x");
+    assert_eq!(strip_path_route_groups("/a(b)/x"), "/a(b)/x");
   }
 }
