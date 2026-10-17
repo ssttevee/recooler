@@ -535,6 +535,8 @@ impl<'a> ComponentTransformVisitor<'a> {
       .event_handler_ids
       .generate_id(self.module_id, &export_name);
 
+    self.check_arrow_handler_bindings(value_node, &event_handler_id);
+
     let captured = self.captured_idents(value_node, &format!("event handler {}", event_handler_id));
 
     let handler_ref = format!(
@@ -565,6 +567,38 @@ impl<'a> ComponentTransformVisitor<'a> {
     }
 
     self.push_export(export_name, replacement);
+  }
+
+  /// Reports an arrow function event handler that uses `this` or `arguments`, which arrow
+  /// functions don't bind, so unlike in a `function` handler they never refer to the element or
+  /// the handler's arguments; the hoisted handler gets those of the client script instead.
+  fn check_arrow_handler_bindings(&mut self, handler: &Expr, event_handler_id: &str) {
+    let Expr::Arrow(arrow) = handler else {
+      return;
+    };
+
+    let mut finder = LexicalBindingFinder::default();
+    arrow.params.visit_with(&mut finder);
+    arrow.body.visit_with(&mut finder);
+    for (used, binding, fix) in [
+      (
+        finder.this,
+        "this",
+        "use a `function` expression to get the element as `this`, or `event.currentTarget`",
+      ),
+      (
+        finder.arguments,
+        "arguments",
+        "use a rest parameter, e.g. `(...args) => ...`",
+      ),
+    ] {
+      if used {
+        self.error(format!(
+          "event handler {} is an arrow function that uses `{}`, which arrow functions don't bind; {}",
+          event_handler_id, binding, fix,
+        ));
+      }
+    }
   }
 
   fn push_export(&mut self, export_name: String, init: Box<Expr>) {
@@ -939,6 +973,41 @@ impl<'a> VisitMut for ComponentTransformVisitor<'a> {
     }
 
     node.visit_mut_children_with(self);
+  }
+}
+
+/// Finds the uses of `this` and `arguments` that refer to those of the enclosing scope, i.e. outside
+/// of nested functions and class bodies, which bind their own.
+#[derive(Default)]
+struct LexicalBindingFinder {
+  this: bool,
+  arguments: bool,
+}
+
+impl Visit for LexicalBindingFinder {
+  noop_visit_type!();
+
+  fn visit_function(&mut self, _: &Function) {}
+  fn visit_getter_prop(&mut self, _: &GetterProp) {}
+  fn visit_setter_prop(&mut self, _: &SetterProp) {}
+
+  fn visit_class(&mut self, node: &Class) {
+    node.super_class.visit_with(self);
+  }
+
+  fn visit_expr(&mut self, node: &Expr) {
+    match node {
+      Expr::This(_) => self.this = true,
+      Expr::Ident(ident) if ident.sym == "arguments" => self.arguments = true,
+      _ => node.visit_children_with(self),
+    }
+  }
+
+  fn visit_prop(&mut self, node: &Prop) {
+    match node {
+      Prop::Shorthand(ident) if ident.sym == "arguments" => self.arguments = true,
+      _ => node.visit_children_with(self),
+    }
   }
 }
 
@@ -1914,6 +1983,54 @@ mod tests {
 
     assert!(err.contains("local function `fmt`"));
     assert!(err.contains("local class `Thing`"));
+  }
+
+  #[test]
+  fn rejects_this_and_arguments_in_arrow_event_handlers() {
+    let err = try_transform(
+      "/x",
+      r#"
+        export default function C() {
+          return (
+            <div>
+              <button hx-on:click={() => { this.classList.toggle("on"); }} />
+              <button hx-on-click={(e) => [1].map(() => console.log(arguments.length, e))} />
+              <button hx-on:load={(e = this) => e} />
+              <button {...{ "hx-on:click": async () => this.remove() }} />
+            </div>
+          );
+        }
+      "#,
+    )
+    .unwrap_err();
+
+    let errors = err.lines().collect::<Vec<_>>();
+    assert_eq!(errors.len(), 4, "{}", err);
+    assert_eq!(
+      errors[0],
+      "src/routes/article/[id]/index.tsx: event handler src/routes/article/[id]/index.tsx@0 is an arrow function that uses `this`, which arrow functions don't bind; use a `function` expression to get the element as `this`, or `event.currentTarget`"
+    );
+    assert!(errors[1].contains("@1 is an arrow function that uses `arguments`"));
+    assert!(errors[2].contains("@2 is an arrow function that uses `this`"));
+    assert!(errors[3].contains("@3 is an arrow function that uses `this`"));
+
+    // `function` handlers, and functions, methods and classes nested in arrow handlers, bind their own
+    transform_at(
+      "/x",
+      r#"
+        export default function C() {
+          return (
+            <div>
+              <button hx-on:click={function () { this.classList.toggle(arguments[0].type); }} />
+              <button hx-on:click={() => [1].forEach(function () { console.log(this, arguments); })} />
+              <button hx-on:click={() => ({ m() { return this; }, get g() { return this; } })} />
+              <button hx-on:click={() => class { f = this; m() { return arguments; } }} />
+              <button hx-on:click={(e) => e.currentTarget.arguments} />
+            </div>
+          );
+        }
+      "#,
+    );
   }
 
   #[test]
