@@ -308,7 +308,7 @@ Because only declarations are carried over to the client script, there are a few
 
 The root component is an optional HOC that wraps the entire page. It is meant to be used for rendering the basic HTML document structure, including the `<html>`, `<head>`, and `<body>` elements. The client script is also passed to the root component which should be embedded inline after the content or just before the `</body>` tag.
 
-The default root component will render the content and the head elements in a basic HTML template with the client script (if any) embedded, inline, just before the `</body> tag.
+The default root component will render the content and the head elements in a basic HTML template with the client script (if any) embedded, inline, just before the `</body> tag. It also adds `<meta charset="utf-8">` unless one of the head's `metas` already declares a charset.
 
 Since the client script is only passed to the root component, it's not very straightforward to load it as a separate script or caching purposes. However, since client scripts are fairly likely to be small, no prescriptions will ad be made for this.
 

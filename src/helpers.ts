@@ -499,6 +499,12 @@ export function renderHeadElements(
   );
 }
 
+function hasCharsetMeta(head: RouteHead): boolean {
+  return !!head.metas?.some((meta) =>
+    Object.keys(meta).some((key) => key.toLowerCase() === "charset"),
+  );
+}
+
 export function DefaultRootHOC(
   Content: Component<RouteProps>,
   clientScript?: string,
@@ -514,7 +520,8 @@ export function DefaultRootHOC(
         createElement(
           "head",
           {},
-          createElement("meta", { charset: "utf-8" }),
+          !hasCharsetMeta(props.head) &&
+            createElement("meta", { charset: "utf-8" }),
           renderHeadElements(props.head),
         ),
         createElement(

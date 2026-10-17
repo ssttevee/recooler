@@ -4,7 +4,9 @@ import { register } from "node:module";
 import { Hono } from "hono";
 
 register("./extensionless-hooks.mjs", import.meta.url);
-const { actionsMiddleware } = await import("../src/helpers.js");
+const { actionsMiddleware, buildHeadFn, DefaultRootHOC, jsxRouteHandler } = await import(
+  "../src/helpers.js"
+);
 const { createElement } = await import("easy-jsx-html-engine");
 
 function post(app, path) {
@@ -133,6 +135,42 @@ describe("actionsMiddleware results", () => {
       const res = await run(action);
       assert.equal(res.status, 302);
       assert.equal(res.headers.get("location"), "/elsewhere");
+    }
+  });
+});
+
+function pageApp(headFn, Page = () => createElement("p", {}, "page")) {
+  const app = new Hono();
+  app.get("/", jsxRouteHandler(DefaultRootHOC, Page, headFn));
+  return app;
+}
+
+async function getText(app, path = "/") {
+  const res = await app.request(path);
+  assert.equal(res.status, 200);
+  return res.text();
+}
+
+describe("DefaultRootHOC", () => {
+  function charsetCount(html) {
+    return html.match(/<meta[^>]*charset/gi)?.length ?? 0;
+  }
+
+  test("emits a utf-8 charset by default", async () => {
+    for (const head of [undefined, {}, { metas: [{ name: "viewport", content: "width=device-width" }] }]) {
+      const html = await getText(pageApp(buildHeadFn([], head)));
+      assert.equal(charsetCount(html), 1, html);
+      assert.match(html, /<meta charset="utf-8"\/>/);
+    }
+  });
+
+  test("does not duplicate a charset declared by the head", async () => {
+    for (const meta of [{ charset: "utf-8" }, { charSet: "utf-8" }, { CHARSET: "iso-8859-1" }]) {
+      const html = await getText(
+        pageApp(buildHeadFn([], { metas: [meta, { name: "x", content: "y" }] })),
+      );
+      assert.equal(charsetCount(html), 1, html);
+      assert.match(html, /<meta name="x" content="y"\/>/);
     }
   });
 });
