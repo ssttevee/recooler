@@ -19,10 +19,12 @@ use farmfe_core::{
   regex::Regex,
   relative_path::PathExt,
   serde_json,
+  swc_ecma_ast::EsVersion,
+  swc_ecma_parser::{EsSyntax, Syntax, TsSyntax},
 };
 use farmfe_toolkit::{
   lazy_static::lazy_static,
-  script::{module_type_from_id, parse_module, syntax_from_module_type},
+  script::{module_type_from_id, parse_module},
 };
 use walkdir::WalkDir;
 
@@ -831,13 +833,38 @@ const REQUEST_HANDLER_EXPORTS: [&str; 6] = [
   "onOptions",
 ];
 
+/// Returns the most permissive syntax for a script module of `module_type`, or `None` for other
+/// module types.
+///
+/// The host's `config.script.parser` is deliberately not used: read through the plugin, its
+/// `ts_config` has the `dts` flag set (a `serde(skip)` field the host never sets, so the host's
+/// `ScriptConfig` layout evidently differs from the plugin's farmfe_core), which makes debug builds
+/// of the swc parser abort on any assignment expression and makes release builds parse route files
+/// as declaration files.
+fn prefetch_parse_syntax(module_type: &ModuleType) -> Option<Syntax> {
+  match module_type {
+    ModuleType::Js | ModuleType::Jsx => Some(Syntax::Es(EsSyntax {
+      jsx: matches!(module_type, ModuleType::Jsx),
+      decorators: true,
+      import_attributes: true,
+      ..Default::default()
+    })),
+    ModuleType::Ts | ModuleType::Tsx => Some(Syntax::Typescript(TsSyntax {
+      tsx: matches!(module_type, ModuleType::Tsx),
+      decorators: true,
+      ..Default::default()
+    })),
+    _ => None,
+  }
+}
+
 /// Parses the script at `path` and returns its exports, see [`find_source_value_exports`], or
 /// `None` if it can't be read or parsed.
-fn read_source_value_exports(path: &Path, config: &Config) -> Option<HashSet<String>> {
+fn read_source_value_exports(path: &Path) -> Option<HashSet<String>> {
   let id = path.to_str()?;
-  let syntax = syntax_from_module_type(&module_type_from_id(id)?, config.script.parser.clone())?;
+  let syntax = prefetch_parse_syntax(&module_type_from_id(id)?)?;
   let content = fs::read_to_string(path).ok()?;
-  let parsed = parse_module(id, &content, syntax, config.script.target).ok()?;
+  let parsed = parse_module(id, &content, syntax, EsVersion::latest()).ok()?;
   Some(find_source_value_exports(&parsed.ast))
 }
 
@@ -978,7 +1005,7 @@ impl FarmPluginRecooler {
   ///
   /// The scan result itself is computed from the same files after they are compiled, so its
   /// exports are a superset of these.
-  pub(crate) fn entrypoint_prefetch_files(&self, config: &Config) -> Result<Vec<PathBuf>> {
+  pub(crate) fn entrypoint_prefetch_files(&self) -> Result<Vec<PathBuf>> {
     let dir_contents = self.scan_dir()?;
 
     // only the last route file of a path is kept by the scan, see `ScanResult::add_route`
@@ -991,11 +1018,7 @@ impl FarmPluginRecooler {
     let route_exports = route_files
       .into_par_iter()
       .filter_map(|(path, route_file)| {
-        Some((
-          path,
-          route_file,
-          read_source_value_exports(route_file, config)?,
-        ))
+        Some((path, route_file, read_source_value_exports(route_file)?))
       })
       .collect::<Vec<_>>();
 
@@ -1143,7 +1166,7 @@ mod tests {
   use std::{cmp::Ordering, collections::HashSet};
 
   use farmfe_core::{
-    module::{Module, ModuleId, ModuleMetaData, ScriptModuleMetaData},
+    module::{Module, ModuleId, ModuleMetaData, ModuleType, ScriptModuleMetaData},
     swc_common::{Globals, GLOBALS},
     swc_ecma_ast::EsVersion,
     swc_ecma_parser::{Syntax, TsSyntax},
@@ -1151,8 +1174,8 @@ mod tests {
   use farmfe_toolkit::script::parse_module;
 
   use super::{
-    compare_route_paths, ignored_on_load_warning, is_trace_stubbed, layout_wraps_route, RouteInfo,
-    RoutePlan, ScanResult,
+    compare_route_paths, ignored_on_load_warning, is_trace_stubbed, layout_wraps_route,
+    prefetch_parse_syntax, RouteInfo, RoutePlan, ScanResult,
   };
 
   fn scan_result(routes: &[&str], middlewares: &[&str]) -> ScanResult {
@@ -1431,6 +1454,26 @@ mod tests {
       }));
       ignored_on_load_warning(&module)
     })
+  }
+
+  #[test]
+  fn prefetch_parse_syntax_never_parses_declaration_files() {
+    for (module_type, tsx) in [(ModuleType::Ts, false), (ModuleType::Tsx, true)] {
+      let Some(Syntax::Typescript(syntax)) = prefetch_parse_syntax(&module_type) else {
+        panic!("{:?}", module_type);
+      };
+      assert!(!syntax.dts);
+      assert!(syntax.decorators);
+      assert_eq!(syntax.tsx, tsx);
+    }
+    for (module_type, jsx) in [(ModuleType::Js, false), (ModuleType::Jsx, true)] {
+      let Some(Syntax::Es(syntax)) = prefetch_parse_syntax(&module_type) else {
+        panic!("{:?}", module_type);
+      };
+      assert_eq!(syntax.jsx, jsx);
+      assert!(syntax.import_attributes);
+    }
+    assert!(prefetch_parse_syntax(&ModuleType::Css).is_none());
   }
 
   #[test]

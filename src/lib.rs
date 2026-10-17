@@ -275,7 +275,7 @@ impl Plugin for FarmPluginRecooler {
   ) -> Result<Option<PluginLoadHookResult>> {
     if param.module_id == ENTRYPOINT_MODULE || param.module_id == ENTRYPOINT_IMPL_MODULE {
       let content = if param.module_id == ENTRYPOINT_MODULE {
-        self.generate_entrypoint_module(context)
+        self.generate_entrypoint_module()
       } else {
         self.generate_entrypoint_impl_module(context, hook_context)
       };
@@ -696,13 +696,13 @@ impl FarmPluginRecooler {
   /// certain to import (see [`Self::entrypoint_prefetch_files`]), which lets the host compile
   /// start on them in the meantime. The re-export comes first so that the app and its imports are
   /// still evaluated in the same order.
-  fn generate_entrypoint_module(&self, context: &Arc<CompilationContext>) -> Result<String> {
+  fn generate_entrypoint_module(&self) -> Result<String> {
     let mut out = format!(
       "export {{ default, onRequest }} from {};\n",
       serde_json::to_string(ENTRYPOINT_IMPL_MODULE).unwrap()
     );
 
-    for file in self.entrypoint_prefetch_files(&context.config)? {
+    for file in self.entrypoint_prefetch_files()? {
       out += format!(
         "import {};\n",
         imports::import_source(&ModuleId::from(file.to_str().unwrap()))
