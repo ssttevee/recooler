@@ -223,6 +223,8 @@ return (
 );
 ```
 
+Form actions are requested with an `action` query parameter on the page's url. Requests without one are handled by the route's own handlers (e.g. `onPost`), and requests whose `action` does not name any form action of the app are rejected with a 404.
+
 NOTE: Routes with path parameters must have `ctx` available as a prop. See [gotchas and workarounds](#form-actions-in-parameterized-routes).
 
 #### Captured variables

@@ -430,14 +430,25 @@ function hmacSha256(key: Uint8Array, message: Uint8Array): Uint8Array {
   return sha256(outer);
 }
 
+// every action id registered by the app, so that an id belonging to an overlapping route (or to the
+// page actions chained after the root component's actions) is passed along instead of rejected
+const registeredActionIds = new Set<string>();
+
 export function actionsMiddleware(
   actions: Record<string, Handler>,
 ): MiddlewareHandler {
+  for (const actionId of Object.keys(actions)) {
+    registeredActionIds.add(actionId);
+  }
+
   return async (ctx, next) => {
-    const params = new URL(ctx.req.url).searchParams;
-    const action = actions[params.get("action")!];
-    if (action) {
-      const result = await action(ctx, next);
+    const actionId = ctx.req.query("action");
+    if (actionId !== undefined && !registeredActionIds.has(actionId)) {
+      return ctx.text("unknown action", 404);
+    }
+
+    if (actionId !== undefined && Object.hasOwn(actions, actionId)) {
+      const result = await actions[actionId](ctx, next);
       if (result === undefined || result === null) {
         return ctx.newResponse(null, 204);
       }

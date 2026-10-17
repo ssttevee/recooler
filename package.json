@@ -55,7 +55,8 @@
     "bump": "npx changeset version",
     "prepack": "tsc",
     "build": "farm-plugin-tools build --platform --cargo-name farm_plugin_recooler -p farm_plugin_recooler --release",
-    "prepublishOnly": "farm-plugin-tools prepublish"
+    "prepublishOnly": "farm-plugin-tools prepublish",
+    "test": "tsc && node --test tests/*.test.mjs"
   },
   "files": [
     "scripts",
