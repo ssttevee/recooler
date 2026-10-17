@@ -24,7 +24,7 @@ use farmfe_core::{
   module::{ModuleId, ModuleMetaData, ModuleType},
   plugin::*,
   regex::Regex,
-  relative_path::PathExt,
+  relative_path::{PathExt, RelativePathBuf},
   serde_json,
 };
 use farmfe_macro_plugin::farm_plugin;
@@ -101,16 +101,21 @@ impl FarmPluginRecooler {
     }
 
     let cwd = std::env::current_dir().unwrap();
-    let src_dir = fs::canonicalize(options.src_dir.unwrap_or("src".to_string()))
-      .unwrap()
-      .relative_to(&cwd)
-      .unwrap();
+    // falls back to the configured path, which is only used until the error is reported
+    let mut relative_dir = |option: &str, dir: String| {
+      fs::canonicalize(&dir)
+        .map_err(|e| e.to_string())
+        .and_then(|path| path.relative_to(&cwd).map_err(|e| e.to_string()))
+        .unwrap_or_else(|e| {
+          option_errors.push(format!("invalid {} {:?}: {}", option, dir, e));
+          RelativePathBuf::from(dir)
+        })
+    };
+
+    let src_dir = relative_dir("src_dir", options.src_dir.unwrap_or("src".to_string()));
 
     let routes_dir = if let Some(routes_dir) = options.routes_dir {
-      fs::canonicalize(routes_dir)
-        .unwrap()
-        .relative_to(&cwd)
-        .unwrap()
+      relative_dir("routes_dir", routes_dir)
     } else {
       src_dir.join("routes")
     };
