@@ -914,6 +914,16 @@ mod tests {
   fn keeps_parentheses_that_are_not_a_whole_path_component() {
     assert_eq!(strip_path_route_groups("/(a)b/x"), "/(a)b/x");
     assert_eq!(strip_path_route_groups("/a(b)/x"), "/a(b)/x");
+    // adjacent groups in one component and an empty pair aren't a group either
+    assert_eq!(strip_path_route_groups("/(a)(b)/x"), "/(a)(b)/x");
+    assert_eq!(strip_path_route_groups("/()/x"), "/()/x");
+  }
+
+  #[test]
+  fn strips_groups_around_params_and_after_static_components() {
+    assert_eq!(strip_path_route_groups("/n/(inner)"), "/n");
+    assert_eq!(strip_path_route_groups("/(q.r)/:id"), "/:id");
+    assert_eq!(strip_path_route_groups("/(g)/:rest{.+}"), "/:rest{.+}");
   }
 
   #[test]
