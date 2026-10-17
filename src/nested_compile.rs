@@ -4,7 +4,12 @@
 use std::{collections::HashMap, sync::Arc};
 
 use farmfe_core::{
-  config::{custom::CUSTOM_CONFIG_EXTERNAL_RECORD, Config, ModuleFormat, TargetEnv},
+  config::{
+    config_regex::ConfigRegex,
+    custom::CUSTOM_CONFIG_EXTERNAL_RECORD,
+    partial_bundling::{PartialBundlingConfig, PartialBundlingEnforceResourceConfig},
+    Config, ModuleFormat, TargetEnv,
+  },
   context::CompilationContext,
   error::Result,
   module::{
@@ -128,11 +133,24 @@ pub(crate) fn nested_compile_input(
 ///   compile must therefore not include the runtime entry of the host, see
 ///   [`nested_compile_input`].
 /// - no externals: an inline script can't import anything, so every import is bundled.
+/// - a single resource: likewise, the script can't import other resources, but the host's
+///   `partialBundling` config, including farm's default one, may split the modules of a client
+///   script into several, e.g. its `node_modules` and its dynamically imported modules. Only the
+///   resource of the entry would be inlined, importing the others. The resource is not named after
+///   the entry, since other resources (e.g. the CSS of the modules) are named after it too, and with
+///   an `output.filename` without `[ext]` they would replace the script.
 pub(crate) fn force_client_script_output(config: &mut Config) {
   config.output.target_env = TargetEnv::Library;
   config.output.format = ModuleFormat::EsModule;
   config.external.clear();
   config.custom.remove(CUSTOM_CONFIG_EXTERNAL_RECORD);
+  config.partial_bundling = Box::new(PartialBundlingConfig {
+    enforce_resources: vec![PartialBundlingEnforceResourceConfig {
+      name: "recooler-client-script".to_string(),
+      test: vec![ConfigRegex::new(".+")],
+    }],
+    ..Default::default()
+  });
 }
 
 /// Returns the script generated for the entry named `entry_name` by a nested compile, given its
@@ -418,8 +436,10 @@ mod tests {
 
   use farmfe_core::{
     config::{
-      config_regex::ConfigRegex, custom::CUSTOM_CONFIG_EXTERNAL_RECORD, Config, ModuleFormat,
-      OutputConfig, TargetEnv,
+      config_regex::ConfigRegex,
+      custom::CUSTOM_CONFIG_EXTERNAL_RECORD,
+      partial_bundling::{PartialBundlingConfig, PartialBundlingEnforceResourceConfig},
+      Config, ModuleFormat, OutputConfig, TargetEnv,
     },
     error::Result,
     module::ModuleId,
@@ -559,6 +579,14 @@ mod tests {
         ..Default::default()
       }),
       external: vec![ConfigRegex::new("^hono")],
+      // e.g. a vendor resource for node_modules
+      partial_bundling: Box::new(PartialBundlingConfig {
+        enforce_resources: vec![PartialBundlingEnforceResourceConfig {
+          name: "vendor".to_string(),
+          test: vec![ConfigRegex::new("node_modules/")],
+        }],
+        ..Default::default()
+      }),
       custom: Box::new(HashMap::from([
         (
           CUSTOM_CONFIG_EXTERNAL_RECORD.to_string(),
@@ -574,6 +602,17 @@ mod tests {
     assert_eq!(config.output.target_env, TargetEnv::Library);
     assert_eq!(config.output.format, ModuleFormat::EsModule);
     assert!(config.external.is_empty());
+    // every module in one resource
+    let enforce_resources = &config.partial_bundling.enforce_resources;
+    assert_eq!(enforce_resources.len(), 1);
+    assert_eq!(enforce_resources[0].test.len(), 1);
+    for id in [
+      "recooler:@src/routes/index.tsx",
+      "src/lib/dyn.ts",
+      "node_modules/hono/dist/utils/cookie.js",
+    ] {
+      assert!(enforce_resources[0].test[0].is_match(id));
+    }
     assert_eq!(
       *config.custom,
       HashMap::from([("other".to_string(), "kept".to_string())])
