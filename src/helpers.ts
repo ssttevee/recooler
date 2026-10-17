@@ -15,14 +15,25 @@ import {
 import { renderToStream } from "easy-jsx-html-engine/stream-webapi";
 import type { Context, Handler, Hono, MiddlewareHandler } from "hono";
 
+/**
+ * Builds the head function of a page from the head exports of its modules, root to route.
+ *
+ * Each entry of `headFns` is either a head function, which is called with the prior head, or a head
+ * object, which replaces the prior head. (Objects are only passed here when the plugin could not
+ * tell the kind of a head export at build time.) `undefined` and `null` entries are skipped.
+ */
 export function buildHeadFn(
-  headFns: RouteHeadFn[],
+  headFns: (RouteHeadFn | RouteHead | null | undefined)[],
   initial?: RouteHead,
 ): (ctx: Context) => Promise<RouteHead> {
   return async (ctx: Context) => {
     let head = initial ? copyHead(initial) : {};
     for (const headFn of headFns) {
-      head = (await headFn(ctx, head)) ?? {};
+      if (typeof headFn === "function") {
+        head = (await headFn(ctx, head)) ?? {};
+      } else if (headFn != null) {
+        head = headFn;
+      }
     }
 
     return head;

@@ -5,10 +5,13 @@ use crate::{
   routes::{PageComponentLayoutItem, RootComponentInfo, RouteInfo},
 };
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum HeadType {
   Function,
   Object,
+  /// Could not be determined at build time, so `buildHeadFn` checks whether it is a function or an
+  /// object at runtime.
+  Unknown,
 }
 
 struct HeadExprBuilder<'a> {
@@ -31,7 +34,7 @@ impl<'a> HeadExprBuilder<'a> {
     if let Some(head_type) = head_type {
       let head_ident = self.imports.identifier(module_id, "head");
       match head_type {
-        HeadType::Function => {
+        HeadType::Function | HeadType::Unknown => {
           self.fns.push(head_ident);
         }
         HeadType::Object => {

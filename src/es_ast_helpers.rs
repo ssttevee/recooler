@@ -4,7 +4,8 @@ use farmfe_core::{
   module::{ModuleId, ScriptModuleMetaData},
   swc_ecma_ast::{
     ArrowExpr, Decl, DefaultDecl, ExportSpecifier, Expr, FnExpr, ImportSpecifier, Module,
-    ModuleDecl, ModuleExportName, ModuleItem, Pat,
+    ModuleDecl, ModuleExportName, ModuleItem, ParenExpr, Pat, Stmt, TsAsExpr, TsConstAssertion,
+    TsNonNullExpr, TsSatisfiesExpr, TsTypeAssertion,
   },
 };
 
@@ -193,51 +194,113 @@ pub(crate) fn find_source_value_exports(ast: &Module) -> HashSet<String> {
   exports
 }
 
-pub(crate) fn find_head_export_type(script: &ScriptModuleMetaData) -> Option<HeadType> {
-  const HEAD_FN_NAME: &str = "head";
+const HEAD_EXPORT_NAME: &str = "head";
 
-  for module_item in &script.ast.body {
-    if let ModuleItem::ModuleDecl(module_decl) = module_item {
-      match module_decl {
-        ModuleDecl::ExportDecl(export) => match &export.decl {
-          Decl::Fn(f) => {
-            if f.ident.sym.eq(HEAD_FN_NAME) {
-              return Some(HeadType::Function);
-            }
-          }
-          Decl::Var(var) => {
-            if var.declare == false {
-              for var_decl in &var.decls {
-                match &var_decl.name {
-                  Pat::Ident(ident) => {
-                    if ident.sym.eq(HEAD_FN_NAME) {
-                      if let Some(expr) = &var_decl.init {
-                        if expr.is_fn_expr() || expr.is_arrow() {
-                          return Some(HeadType::Function);
-                        } else {
-                          return Some(HeadType::Object);
-                        }
-                      }
-                    }
-                  }
-                  _ => {}
-                }
-              }
-            }
-          }
-          _ => {}
-        },
-        // ModuleDecl::ExportNamed(export) => {}
-        // ModuleDecl::ExportDefaultDecl(export) => {}
-        // ModuleDecl::ExportDefaultExpr(export) => {}
-        _ => {}
+/// Determines what kind of value a module exports as `head`, if any.
+///
+/// The kind is only known statically for function declarations and for function, arrow, or object
+/// literals (optionally wrapped in parentheses or TS `as`, `satisfies`, `!` or `<T>` expressions),
+/// declared either inline or as a local declaration exported with `export { .. }`. Any other value
+/// (e.g. a call, an import, or a re-export) is [`HeadType::Unknown`] and is checked at runtime.
+pub(crate) fn find_head_export_type(ast: &Module) -> Option<HeadType> {
+  for module_item in &ast.body {
+    let ModuleItem::ModuleDecl(module_decl) = module_item else {
+      continue;
+    };
+
+    match module_decl {
+      ModuleDecl::ExportDecl(export) => {
+        if let Some(head_type) = decl_head_type(&export.decl, HEAD_EXPORT_NAME) {
+          return head_type;
+        }
       }
+      ModuleDecl::ExportNamed(export) if !export.type_only => {
+        for spec in &export.specifiers {
+          let ExportSpecifier::Named(named) = spec else {
+            continue;
+          };
+
+          if named.is_type_only
+            || module_export_name(named.exported.as_ref().unwrap_or(&named.orig))
+              != HEAD_EXPORT_NAME
+          {
+            continue;
+          }
+
+          if export.src.is_some() {
+            return Some(HeadType::Unknown);
+          }
+
+          return local_head_type(ast, &module_export_name(&named.orig));
+        }
+      }
+      _ => {}
     }
   }
 
-  // TODO: support other head export types
-
   None
+}
+
+/// Returns the head type of the local binding `name` exported with `export { name as head }`.
+fn local_head_type(ast: &Module, name: &str) -> Option<HeadType> {
+  for module_item in &ast.body {
+    let decl = match module_item {
+      ModuleItem::Stmt(Stmt::Decl(decl)) => decl,
+      ModuleItem::ModuleDecl(ModuleDecl::ExportDecl(export)) => &export.decl,
+      ModuleItem::ModuleDecl(ModuleDecl::Import(import)) => {
+        let spec = import.specifiers.iter().find_map(|spec| match spec {
+          ImportSpecifier::Named(named) => named.local.sym.eq(name).then_some(named.is_type_only),
+          ImportSpecifier::Default(default) => default.local.sym.eq(name).then_some(false),
+          ImportSpecifier::Namespace(ns) => ns.local.sym.eq(name).then_some(false),
+        });
+        match spec {
+          // type only imports are stripped along with the export
+          Some(is_type_only) => {
+            return (!import.type_only && !is_type_only).then_some(HeadType::Unknown)
+          }
+          None => continue,
+        }
+      }
+      _ => continue,
+    };
+
+    if let Some(head_type) = decl_head_type(decl, name) {
+      return head_type;
+    }
+  }
+
+  // not declared in this module (or only as a type, which is stripped along with the export)
+  None
+}
+
+/// Returns `Some` if `decl` declares the value `name`, with the head type of that value.
+fn decl_head_type(decl: &Decl, name: &str) -> Option<Option<HeadType>> {
+  match decl {
+    Decl::Fn(f) if !f.declare && f.ident.sym.eq(name) => Some(Some(HeadType::Function)),
+    Decl::Var(var) if !var.declare => var.decls.iter().find_map(|var_decl| match &var_decl.name {
+      Pat::Ident(ident) if ident.sym.eq(name) => Some(match &var_decl.init {
+        Some(init) => Some(expr_head_type(init)),
+        // a `let` may be assigned later, so leave it to the runtime check
+        None => Some(HeadType::Unknown),
+      }),
+      _ => None,
+    }),
+    _ => None,
+  }
+}
+
+fn expr_head_type(expr: &Expr) -> HeadType {
+  match expr {
+    Expr::Fn(..) | Expr::Arrow(..) => HeadType::Function,
+    Expr::Object(..) => HeadType::Object,
+    Expr::Paren(ParenExpr { expr, .. })
+    | Expr::TsAs(TsAsExpr { expr, .. })
+    | Expr::TsSatisfies(TsSatisfiesExpr { expr, .. })
+    | Expr::TsConstAssertion(TsConstAssertion { expr, .. })
+    | Expr::TsNonNull(TsNonNullExpr { expr, .. })
+    | Expr::TsTypeAssertion(TsTypeAssertion { expr, .. }) => expr_head_type(expr),
+    _ => HeadType::Unknown,
+  }
 }
 
 pub fn is_fn(expr: &Expr) -> bool {
@@ -264,12 +327,22 @@ mod tests {
   use farmfe_core::{config::ScriptParserConfig, module::ModuleType, swc_ecma_ast::EsVersion};
   use farmfe_toolkit::script::{parse_module, syntax_from_module_type};
 
-  use super::find_source_value_exports;
+  use super::{find_head_export_type, find_source_value_exports};
+  use crate::head::HeadType;
+
+  fn parse(source: &str) -> farmfe_core::swc_ecma_ast::Module {
+    let syntax = syntax_from_module_type(&ModuleType::Tsx, ScriptParserConfig::default()).unwrap();
+    parse_module("test.tsx", source, syntax, EsVersion::latest())
+      .unwrap()
+      .ast
+  }
 
   fn exports(source: &str) -> HashSet<String> {
-    let syntax = syntax_from_module_type(&ModuleType::Tsx, ScriptParserConfig::default()).unwrap();
-    let parsed = parse_module("test.tsx", source, syntax, EsVersion::latest()).unwrap();
-    find_source_value_exports(&parsed.ast)
+    find_source_value_exports(&parse(source))
+  }
+
+  fn head_type(source: &str) -> Option<HeadType> {
+    find_head_export_type(&parse(source))
   }
 
   fn set(names: &[&str]) -> HashSet<String> {
@@ -335,5 +408,109 @@ mod tests {
       set(&[])
     );
     assert_eq!(exports("export type onGet = () => void;"), set(&[]));
+  }
+
+  #[test]
+  fn finds_head_export_type() {
+    use HeadType::{Function, Object, Unknown};
+
+    let cases: &[(&str, Option<HeadType>)] = &[
+      ("export function head() { return {}; }", Some(Function)),
+      ("export const head = () => ({});", Some(Function)),
+      (
+        "export const head = function () { return {}; };",
+        Some(Function),
+      ),
+      ("export const head = { title: 'a' };", Some(Object)),
+      (
+        "export const head: RouteHeadFn = (_, prev) => prev;",
+        Some(Function),
+      ),
+      (
+        "export let head: RouteHeadFn = (_, prev) => prev;",
+        Some(Function),
+      ),
+      ("export var head: RouteHead = { title: 'a' };", Some(Object)),
+      (
+        "export const head = ((_, prev) => prev) satisfies RouteHeadFn;",
+        Some(Function),
+      ),
+      (
+        "export const head = ((_, prev) => prev) as RouteHeadFn;",
+        Some(Function),
+      ),
+      ("export const head = { title: 'a' } as const;", Some(Object)),
+      (
+        "export const head = { title: 'a' } satisfies RouteHead;",
+        Some(Object),
+      ),
+      ("export const head = (((_, prev) => prev));", Some(Function)),
+      ("export const head = ({ title: 'a' });", Some(Object)),
+      ("export const head = (() => ({}))!;", Some(Function)),
+      ("export const head = makeHead();", Some(Unknown)),
+      (
+        "export const head = makeHead() satisfies RouteHeadFn;",
+        Some(Unknown),
+      ),
+      ("export const head = cond ? {} : () => ({});", Some(Unknown)),
+      (
+        "import { other } from './x'; export const head = other;",
+        Some(Unknown),
+      ),
+      ("export let head;", Some(Unknown)),
+      ("export const head;", Some(Unknown)),
+      ("export const a = 1, head = () => ({});", Some(Function)),
+      // named exports of local declarations
+      ("const head = () => ({}); export { head };", Some(Function)),
+      (
+        "export { head }; const head = { title: 'a' };",
+        Some(Object),
+      ),
+      (
+        "function head() { return {}; } export { head };",
+        Some(Function),
+      ),
+      (
+        "const fn = () => ({}); export { fn as head };",
+        Some(Function),
+      ),
+      (
+        "export const fn = () => ({}); export { fn as head };",
+        Some(Function),
+      ),
+      ("const head = makeHead(); export { head };", Some(Unknown)),
+      ("let head; export { head };", Some(Unknown)),
+      (
+        "import { head } from './x'; export { head };",
+        Some(Unknown),
+      ),
+      ("import head from './x'; export { head };", Some(Unknown)),
+      (
+        "import * as head from './x'; export { head };",
+        Some(Unknown),
+      ),
+      ("export { head as 'head' }; const head = {};", Some(Object)),
+      // re-exports
+      ("export { head } from './x';", Some(Unknown)),
+      ("export { other as head } from './x';", Some(Unknown)),
+      // not a value export named head
+      ("export const notHead = () => ({});", None),
+      ("const head = () => ({}); export { head as other };", None),
+      ("export declare const head: RouteHeadFn;", None),
+      ("export declare function head(): RouteHead;", None),
+      ("export type head = RouteHead;", None),
+      ("type head = RouteHead; export { head };", None),
+      ("import type { head } from './x'; export { head };", None),
+      ("import { type head } from './x'; export { head };", None),
+      ("export type { head } from './x';", None),
+      ("export { type head } from './x';", None),
+      ("const head = {}; export { type head };", None),
+      ("export * from './x';", None),
+      ("export default {};", None),
+    ];
+
+    for (source, expected) in cases {
+      assert_eq!(head_type(source), *expected, "{}", source);
+    }
   }
 }

@@ -529,7 +529,7 @@ impl ScanResult {
           request_handlers,
           on_request: exports.contains("onRequest"),
           on_load: exports.contains("onLoad"),
-          head: find_head_export_type(script),
+          head: find_head_export_type(&script.ast),
         },
       );
     } else {
@@ -1086,7 +1086,7 @@ impl FarmPluginRecooler {
       let root_module_id = root_deps[0].id.clone();
 
       result.root_component = Some(RootComponentInfo {
-        head: find_head_export_type(root_deps[0].meta.as_script()),
+        head: find_head_export_type(&root_deps[0].meta.as_script().ast),
         module_id: root_module_id,
         handlers: {
           let mut ids_lock = self.ids.lock().unwrap();

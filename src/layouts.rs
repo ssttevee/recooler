@@ -109,7 +109,7 @@ impl LayoutTree {
 
       let exports = find_exports(&main_module.id, script);
       assert!(node.module.is_none());
-      let head = find_head_export_type(script);
+      let head = find_head_export_type(&script.ast);
       // println!("inserting layout: {} {:?}", path, head);
       node.module = Some(LayoutInfo {
         module_id: main_module.id.clone(),
