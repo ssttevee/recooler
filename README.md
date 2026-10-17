@@ -162,7 +162,7 @@ Layout are implemented as "Higher Order Components", or HOCs, that wrap the page
 
 ### Middleware
 
-Regular hono middleware may be exported from a middleware module to take effect for the particular route. The behavior is the same as calling `app.use("/route", middleware)` on a hono instance. The only special sauce from Recooler is the folder directory structure and ordering by file name.
+Regular hono middleware may be the default export of a middleware module to take effect for the particular route. The behavior is the same as calling `app.use("/route/*", middleware)` on a hono instance, so it also handles the requests to the paths under the route. The only special sauce from Recooler is the folder directory structure and ordering by file name.
 
 Middleware files placed directly in a group directory (i.e. a parenthesized directory name) will only apply to the routes in the group. This is unlike regular middleware which will handle all requests matching the prefix regardless of whether there is a route handler.
 
@@ -172,8 +172,13 @@ Any `hx-{method}` attributes with function values will be converted to a form ac
 
 This is a little similar to next.js's `"use server"` functions, but specifically for htmx.
 
+Form actions run after the middleware of the page, and the request of an action is handled by the action alone: the `onRequest` and `on{Method}` handlers of the route don't run. See [hono handler order](#hono-handler-order).
+
 ```ts
-declare interface FormActionFn<TPayload = any, TContext = HonoContext> {
+declare interface FormActionFn<
+  TPayload extends {} = Record<string, any> & { __formData: FormData },
+  TContext extends HonoContext = HonoContext,
+> {
   (
     ctx: TContext,
     payload: TPayload,
@@ -353,11 +358,11 @@ For more information about `<Suspense />`, please see the easy-jsx-html-engine d
 
 Hono middleware/handlers have an execution order.
 
-Here is what it should be:
+Here is the order for a request to a route:
 
 ```
-1. action handlers
-2. middleware
+1. middleware
+2. form actions (only for requests with an `?action=` query of the route, which end here)
 3. onRequest
    ├── onPost, onPatch, onPut, onDelete, onOptions
    └── onGet
