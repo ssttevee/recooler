@@ -354,15 +354,25 @@ impl Plugin for FarmPluginRecooler {
       param.module_id.clone()
     };
 
+    let module_path = PathBuf::from(param.module_id.relative_path());
+    let is_route_module = routes::is_route_file(&self.routes_dir, &module_path);
+
+    // form actions are only handled on the paths of the pages that render them, so only the
+    // actions of a route module, which renders on its own path, get an absolute url; those of any
+    // other module, e.g. a layout that renders on every page under its directory, get a relative
+    // url that posts to the current page
+    let route_pathname = if is_route_module {
+      strip_path_route_groups(&routes::file_to_route_path(&self.routes_dir, &module_path))
+    } else {
+      String::new()
+    };
+
     let mut ids_lock = self.ids.lock().unwrap();
     let mut atoms_lock = self.atom_store.lock().unwrap();
 
     htmx::transform::transform_module(
       &module_id,
-      strip_path_route_groups(&routes::file_to_route_path(
-        &self.routes_dir,
-        &PathBuf::from(param.module_id.relative_path()),
-      )),
+      route_pathname,
       ids_lock.get_mut(),
       atoms_lock.get_mut(),
       &mut script.ast,
@@ -376,10 +386,7 @@ impl Plugin for FarmPluginRecooler {
         ids_lock.get_mut(),
         &mut script.ast,
         // only the `onLoad` of route modules runs on the client
-        routes::is_route_file(
-          &self.routes_dir,
-          &PathBuf::from(param.module_id.relative_path()),
-        ),
+        is_route_module,
         &self.client_banned_imports,
       )
       .map_err(CompilationError::GenericError)?;
