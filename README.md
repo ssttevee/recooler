@@ -136,7 +136,7 @@ Within in any component (page, layout, root, or other component) or head functio
 
 Route modules, layout modules, and the root component module may optionally export a `head` object (`RouteHead`) or function (`RouteHeadFn`), used to set the head elements for the page. If an object is exported, it will overwrite all prior head elements. If a function is exported, then the implementor will have access to the prior head object and may choose to extend or overwrite it. Head functions are applied out to in, starting from the root component, applying the head function from each layout module, and finally the route module. This means the route module's head export will have the final say on the head elements.
 
-The `head` export may be declared in any form, e.g. `export function head`, `export const head = ...` (with or without `as`/`satisfies`), `export { head }`, or `export { head } from "./head"`. If the plugin cannot tell at build time whether it is an object or a function (e.g. `export const head = makeHead()`), this is checked when the page is rendered. `export *` re-exports and destructured exports (`export const { head } = ...`) are not detected.
+The `head` export may be declared in any form, e.g. `export function head`, `export const head = ...` (with or without `as`/`satisfies`), `export { head }`, or `export { head } from "./head"`, except through `export * from "./head"`, which is not followed. If the plugin cannot tell at build time whether it is an object or a function (e.g. `export const head = makeHead()`), this is checked when the page is rendered.
 
 ```ts
 declare interface RouteHead {

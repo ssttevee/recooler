@@ -4,8 +4,8 @@ use farmfe_core::{
   module::{ModuleId, ScriptModuleMetaData},
   swc_ecma_ast::{
     ArrowExpr, Decl, DefaultDecl, ExportSpecifier, Expr, FnExpr, ImportSpecifier, Module,
-    ModuleDecl, ModuleExportName, ModuleItem, ParenExpr, Pat, Stmt, TsAsExpr, TsConstAssertion,
-    TsNonNullExpr, TsSatisfiesExpr, TsTypeAssertion,
+    ModuleDecl, ModuleExportName, ModuleItem, ObjectPatProp, ParenExpr, Pat, Stmt, TsAsExpr,
+    TsConstAssertion, TsNonNullExpr, TsSatisfiesExpr, TsTypeAssertion,
   },
 };
 
@@ -216,8 +216,13 @@ pub(crate) fn find_head_export_type(ast: &Module) -> Option<HeadType> {
       }
       ModuleDecl::ExportNamed(export) if !export.type_only => {
         for spec in &export.specifiers {
-          let ExportSpecifier::Named(named) = spec else {
-            continue;
+          let named = match spec {
+            ExportSpecifier::Named(named) => named,
+            // `export * as head from "./x"` exports the module namespace object
+            ExportSpecifier::Namespace(ns) if module_export_name(&ns.name) == HEAD_EXPORT_NAME => {
+              return Some(HeadType::Unknown);
+            }
+            _ => continue,
           };
 
           if named.is_type_only
@@ -283,9 +288,31 @@ fn decl_head_type(decl: &Decl, name: &str) -> Option<Option<HeadType>> {
         // a `let` may be assigned later, so leave it to the runtime check
         None => Some(HeadType::Unknown),
       }),
+      // destructured, e.g. `export const { head } = createPage()`
+      pat if pat_binds(pat, name) => Some(Some(HeadType::Unknown)),
       _ => None,
     }),
     _ => None,
+  }
+}
+
+/// Returns whether the pattern of a variable declaration declares the binding `name`.
+fn pat_binds(pat: &Pat, name: &str) -> bool {
+  match pat {
+    Pat::Ident(ident) => ident.sym.eq(name),
+    Pat::Array(array) => array
+      .elems
+      .iter()
+      .flatten()
+      .any(|elem| pat_binds(elem, name)),
+    Pat::Object(object) => object.props.iter().any(|prop| match prop {
+      ObjectPatProp::KeyValue(key_value) => pat_binds(&key_value.value, name),
+      ObjectPatProp::Assign(assign) => assign.key.sym.eq(name),
+      ObjectPatProp::Rest(rest) => pat_binds(&rest.arg, name),
+    }),
+    Pat::Assign(assign) => pat_binds(&assign.left, name),
+    Pat::Rest(rest) => pat_binds(&rest.arg, name),
+    Pat::Invalid(..) | Pat::Expr(..) => false,
   }
 }
 
@@ -493,6 +520,29 @@ mod tests {
       // re-exports
       ("export { head } from './x';", Some(Unknown)),
       ("export { other as head } from './x';", Some(Unknown)),
+      ("export * as head from './x';", Some(Unknown)),
+      // destructured declarations
+      ("export const { head } = createPage();", Some(Unknown)),
+      ("export const { a, b: head } = createPage();", Some(Unknown)),
+      (
+        "export const { head = () => ({}) } = createPage();",
+        Some(Unknown),
+      ),
+      ("export const [, head] = createPage();", Some(Unknown)),
+      (
+        "export const { a: [{ head }] } = createPage();",
+        Some(Unknown),
+      ),
+      ("export const { ...head } = createPage();", Some(Unknown)),
+      (
+        "const { head } = createPage(); export { head };",
+        Some(Unknown),
+      ),
+      (
+        "const [x, ...head] = createPage(); export { head };",
+        Some(Unknown),
+      ),
+      ("export const { head: other } = createPage();", None),
       // not a value export named head
       ("export const notHead = () => ({});", None),
       ("const head = () => ({}); export { head as other };", None),
@@ -506,6 +556,7 @@ mod tests {
       ("export { type head } from './x';", None),
       ("const head = {}; export { type head };", None),
       ("export * from './x';", None),
+      ("export * as other from './x';", None),
       ("export default {};", None),
     ];
 
