@@ -277,28 +277,7 @@ impl Plugin for FarmPluginRecooler {
             source_map: None,
           }))
         }
-        Err(e) => {
-          match &e {
-            CompilationError::GenericError(msg) => match serde_json::from_str::<Vec<String>>(msg) {
-              // nested compiles report every error, e.g. one per banned client import
-              Ok(msg) => {
-                println!("{}", msg.join("\n"));
-              }
-              Err(_) => match serde_json::from_str::<String>(msg) {
-                Ok(msg) => {
-                  println!("{}", msg);
-                }
-                Err(_) => {
-                  println!("{}", msg);
-                }
-              },
-            },
-            _ => println!("qwer {}", e),
-          }
-          return Err(CompilationError::GenericError(
-            "failed to generate entrypoint module".to_string(),
-          ));
-        }
+        Err(e) => return Err(report_load_error(context, &param.module_id, e)),
       }
     }
 
@@ -311,12 +290,7 @@ impl Plugin for FarmPluginRecooler {
             source_map: None,
           }))
         }
-        Err(e) => {
-          println!("{}", e);
-          return Err(CompilationError::GenericError(
-            "failed to generate metadata module".to_string(),
-          ));
-        }
+        Err(e) => return Err(report_load_error(context, &param.module_id, e)),
       }
     }
 
@@ -332,12 +306,7 @@ impl Plugin for FarmPluginRecooler {
             source_map: None,
           }))
         }
-        Err(e) => {
-          println!("{}", e);
-          return Err(CompilationError::GenericError(
-            "failed to generate client module".to_string(),
-          ));
-        }
+        Err(e) => return Err(report_load_error(context, &param.module_id, e)),
       }
     }
 
@@ -347,7 +316,7 @@ impl Plugin for FarmPluginRecooler {
   fn process_module(
     &self,
     param: &mut PluginProcessModuleHookParam,
-    _context: &Arc<CompilationContext>,
+    context: &Arc<CompilationContext>,
   ) -> Result<Option<()>> {
     let script = if let ModuleMetaData::Script(script) = param.meta {
       if param.module_id.relative_path().starts_with(&self.src_dir) {
@@ -395,15 +364,20 @@ impl Plugin for FarmPluginRecooler {
     .map_err(CompilationError::GenericError)?;
 
     if handlers_slice {
-      htmx::transform::slice_handler_module(
+      if let Err(e) = htmx::transform::slice_handler_module(
         &module_id,
         ids_lock.get_mut(),
         &mut script.ast,
         // only the `onLoad` of route modules runs on the client
         is_route_module,
         &self.client_banned_imports,
-      )
-      .map_err(CompilationError::GenericError)?;
+      ) {
+        // reported as is rather than as the cause of a `process_module` error (see
+        // `report_load_error`), which fails the client script compile once it finishes; the module
+        // is emptied in the meantime so that its server side imports aren't built
+        report_errors(context, [e]);
+        script.ast.body.clear();
+      }
     }
 
     Ok(Some(()))
@@ -414,6 +388,50 @@ impl Plugin for FarmPluginRecooler {
 /// registration so that the paths always agree with the registered routes
 fn strip_path_route_groups(path: &str) -> String {
   routes::route_path_without_groups(path)
+}
+
+/// Returns the messages of an error. A failed nested compile reports all of its errors at once as
+/// a JSON array, e.g. one per banned client import, which is split into its messages.
+fn error_messages(e: &CompilationError) -> Vec<String> {
+  if let CompilationError::GenericError(msg) = e {
+    if let Ok(messages) = serde_json::from_str::<Vec<String>>(msg) {
+      return messages
+        .into_iter()
+        .flat_map(|msg| error_messages(&CompilationError::GenericError(msg)))
+        .collect();
+    }
+  }
+  vec![e.to_string()]
+}
+
+/// Reports errors as they are when the compile finishes, see [`report_load_error`].
+fn report_errors(context: &CompilationContext, messages: impl IntoIterator<Item = String>) {
+  let mut log_store = context.log_store.lock();
+  for message in messages {
+    // e.g. the app and its impl module both fail to scan the routes
+    if !log_store.errors().contains(&message) {
+      log_store.add_error(message);
+    }
+  }
+}
+
+/// Reports an error from generating one of the plugin's modules and returns the error for the
+/// `load` hook.
+///
+/// The host wraps a load error in its own, which shows the original error in its `Debug` format,
+/// i.e. as `Some(GenericError("..."))` with the newlines of multi-line messages escaped. So the
+/// messages are added to the compile's log store instead, whose errors the host reports as they
+/// are along with the returned one once the build or update finishes.
+fn report_load_error(
+  context: &CompilationContext,
+  module_id: &str,
+  e: CompilationError,
+) -> CompilationError {
+  report_errors(context, error_messages(&e));
+  CompilationError::GenericError(format!(
+    "failed to generate {}, see the errors below",
+    module_id
+  ))
 }
 
 impl FarmPluginRecooler {
@@ -783,7 +801,14 @@ impl FarmPluginRecooler {
 
 #[cfg(test)]
 mod tests {
-  use super::{strip_path_route_groups, ModuleSymbol, RouteHandlerFactoryInput};
+  use farmfe_core::{
+    config::Config, context::CompilationContext, error::CompilationError, serde_json,
+  };
+
+  use super::{
+    error_messages, report_load_error, strip_path_route_groups, ModuleSymbol,
+    RouteHandlerFactoryInput,
+  };
 
   fn route_handler_factory_import(input: Option<RouteHandlerFactoryInput>) -> String {
     let symbol = ModuleSymbol::route_handler_factory(input);
@@ -838,5 +863,47 @@ mod tests {
   fn keeps_parentheses_that_are_not_a_whole_path_component() {
     assert_eq!(strip_path_route_groups("/(a)b/x"), "/(a)b/x");
     assert_eq!(strip_path_route_groups("/a(b)/x"), "/a(b)/x");
+  }
+
+  #[test]
+  fn splits_nested_compile_errors() {
+    // as reported by a failed nested compile
+    let nested = CompilationError::GenericError(
+      serde_json::json!(["first\n  line two", "second"]).to_string(),
+    );
+    assert_eq!(error_messages(&nested), vec!["first\n  line two", "second"]);
+
+    let single = CompilationError::GenericError("not json\n  line two".to_string());
+    assert_eq!(error_messages(&single), vec!["not json\n  line two"]);
+  }
+
+  #[test]
+  fn reports_load_errors_as_they_are() {
+    let context = CompilationContext::new(Config::default(), vec![]).unwrap();
+    let nested = || {
+      CompilationError::GenericError(
+        serde_json::json!([
+          "client script for src/routes/a/index.tsx includes banned modules:\n  fakedb/index.js",
+          "second",
+        ])
+        .to_string(),
+      )
+    };
+
+    let e = report_load_error(&context, "recooler::app-impl", nested());
+    assert_eq!(
+      e.to_string(),
+      "failed to generate recooler::app-impl, see the errors below"
+    );
+    // reported once, even if another module fails with the same errors
+    report_load_error(&context, "recooler::app", nested());
+    assert_eq!(
+      context.log_store.lock().errors(),
+      &vec![
+        "client script for src/routes/a/index.tsx includes banned modules:\n  fakedb/index.js"
+          .to_string(),
+        "second".to_string(),
+      ]
+    );
   }
 }
