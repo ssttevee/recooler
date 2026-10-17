@@ -42,9 +42,9 @@ pub(crate) fn is_banned_module(patterns: &[Regex], id: &ModuleId) -> bool {
 /// followed by the shortest chain of modules that imports it from `entry`, e.g.
 /// `node_modules/faunadb/index.js via src/routes/index.tsx → src/lib/db.ts`.
 ///
-/// The chain leaves out `entry` itself, which is the generated client entry, and the query of the
-/// handlers variant of a module. Banned modules that `entry` doesn't import, e.g. those of the
-/// farm runtime, are listed without a chain.
+/// The banned modules and the chains leave out the query of the handlers variant of a module, and
+/// the chain leaves out `entry` itself, which is the generated client entry. Banned modules that
+/// `entry` doesn't import, e.g. those of the farm runtime, are listed without a chain.
 pub(crate) fn banned_client_modules(
   graph: &ModuleGraph,
   entry: &ModuleId,
@@ -87,10 +87,10 @@ pub(crate) fn banned_client_modules(
         current = importers.get(importer);
       }
       if chain.is_empty() {
-        return id.to_string();
+        return id.relative_path().to_string();
       }
       chain.reverse();
-      format!("{} via {}", id.to_string(), chain.join(" → "))
+      format!("{} via {}", id.relative_path(), chain.join(" → "))
     })
     .collect()
 }
@@ -235,6 +235,35 @@ mod tests {
         "node_modules/fauna-runtime.js",
         "node_modules/faunadb/index.js via src/components/button.tsx → src/lib/db.ts",
         "node_modules/faunadb/lib.js via src/components/button.tsx → src/lib/db.ts → node_modules/faunadb/index.js",
+      ]
+    );
+  }
+
+  #[test]
+  fn lists_banned_modules_without_query_through_import_cycles() {
+    let graph = graph(&[
+      (
+        "recooler:@src/routes/a/index.tsx",
+        "src/components/button.tsx?recooler-handlers",
+      ),
+      ("src/components/button.tsx?recooler-handlers", "src/lib/a.ts"),
+      ("src/lib/a.ts", "src/lib/b.ts"),
+      ("src/lib/b.ts", "src/lib/a.ts"),
+      // a cycle back to the entry
+      ("src/lib/b.ts", "recooler:@src/routes/a/index.tsx"),
+      ("src/lib/b.ts", "node_modules/faunadb/index.js"),
+    ]);
+
+    assert_eq!(
+      banned_client_modules(
+        &graph,
+        &ModuleId::from("recooler:@src/routes/a/index.tsx"),
+        |id| id.relative_path().contains("fauna") || id.relative_path().contains("button"),
+      ),
+      vec![
+        // imported directly by the entry
+        "node_modules/faunadb/index.js via src/components/button.tsx → src/lib/a.ts → src/lib/b.ts",
+        "src/components/button.tsx",
       ]
     );
   }
