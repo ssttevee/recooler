@@ -71,7 +71,7 @@ jobs:
           #   osxcross: true
           #   zig: true
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
       - name: Cache rust artifacts
         uses: Swatinem/rust-cache@v2
         with:
@@ -83,9 +83,9 @@ jobs:
           version: 9.4.0
           run_install: false
 
-      - uses: actions/setup-node@v3
+      - uses: actions/setup-node@v4
         with:
-          node-version: 18
+          node-version: 24.x
           cache: "pnpm"
       - name: Install Dependencies
         uses: nick-fields/retry@v3

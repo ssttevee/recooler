@@ -11,16 +11,18 @@ permissions:
 concurrency: ${{ github.workflow }}-${{ github.ref }}
 
 jobs:
-  call-rust-build:
-    uses: ./.github/workflows/build.yaml
+  # builds every platform binary (via build.yaml), runs the cargo and node tests and checks the
+  # playground against the linux binary; nothing is published unless all of it passes
+  call-ci:
+    uses: ./.github/workflows/ci.yaml
 
   release:
     name: Release
-    needs: [call-rust-build]
+    needs: [call-ci]
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Repo
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
@@ -34,7 +36,7 @@ jobs:
           node-version: 24.x
           cache: "pnpm"
 
-      # batch download artifacts
+      # batch download the artifacts built by build.yaml inside call-ci
       - uses: actions/download-artifact@v4
         with:
           path: /tmp/artifacts
