@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from 'fs';
+import { existsSync, readdirSync, readFileSync } from 'fs';
 import { createRequire } from 'module';
 import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
@@ -16,7 +16,13 @@ function isMusl() {
     try {
       return readFileSync('/usr/bin/ldd', 'utf8').includes('musl');
     } catch (e) {
-      return true;
+      // No readable ldd: only report musl if its dynamic loader is present,
+      // since glibc is the common case.
+      try {
+        return readdirSync('/lib').some((f) => f.startsWith('ld-musl-'));
+      } catch (e) {
+        return false;
+      }
     }
   } else {
     const { glibcVersionRuntime } = process.report.getReport().header;
