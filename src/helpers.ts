@@ -515,29 +515,35 @@ export function actionsMiddleware(
   };
 }
 
-const ranMiddleware = new WeakMap<Request, Set<MiddlewareHandler>>();
+const ranMiddleware = new WeakMap<Context, Set<unknown>>();
 
 /**
- * Runs `middleware` at most once per request.
+ * Runs `middleware` at most once per request, as identified by `key` (the generated app passes
+ * the middleware's module id, so that one function re-exported by several groups still runs for
+ * each group), or by the function itself.
  *
  * The generated app runs the middleware of a route group as the first handlers of each of the
  * group's routes' registrations, so that it runs exactly when one of the group's handlers does,
  * whatever route matched the request first and however the app is mounted. A request may go
  * through several registrations of the same route (e.g. its form actions, then its `onPost`), so
- * each middleware is only run the first time.
+ * each middleware is only run the first time. The marks belong to the context, i.e. to one
+ * dispatch: a request that is dispatched again runs the middleware again.
  */
-export function groupMiddleware(middleware: MiddlewareHandler): MiddlewareHandler {
+export function groupMiddleware(
+  middleware: MiddlewareHandler,
+  key: unknown = middleware,
+): MiddlewareHandler {
   return (ctx, next) => {
-    let ran = ranMiddleware.get(ctx.req.raw);
+    let ran = ranMiddleware.get(ctx);
     if (ran === undefined) {
       ran = new Set();
-      ranMiddleware.set(ctx.req.raw, ran);
+      ranMiddleware.set(ctx, ran);
     }
-    if (ran.has(middleware)) {
+    if (ran.has(key)) {
       return next();
     }
 
-    ran.add(middleware);
+    ran.add(key);
     return middleware(ctx, next);
   };
 }

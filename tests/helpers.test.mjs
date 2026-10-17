@@ -240,6 +240,26 @@ describe("groupMiddleware", () => {
     assert.deepEqual(trace, ["root", "admin"]);
   });
 
+  test("runs again when the same request is dispatched again", async () => {
+    // e.g. a retry wrapper calling `app.fetch(c.req.raw)` after a 401
+    const a = app();
+    const req = new Request("http://localhost/posts/7", { method: "POST" });
+    assert.equal(await (await a.request(req)).text(), "admin post");
+    assert.equal(await (await a.request(req)).text(), "admin post");
+    assert.deepEqual(trace, ["root", "admin", "root", "admin"]);
+  });
+
+  test("runs one function once per group when keyed by the group", async () => {
+    // two groups re-exporting the same middleware module, keyed by their own module ids
+    const shared = mw("shared");
+    const a = new Hono({ strict: true });
+    a.all("/x", groupMiddleware(shared, "(pub)/middleware.ts"), fallThrough);
+    a.get("/:rest{.+}", groupMiddleware(shared, "(staff)/middleware.ts"), text("staff"));
+    trace.length = 0;
+    assert.equal(await (await a.request("/x")).text(), "staff");
+    assert.deepEqual(trace, ["shared", "shared"]);
+  });
+
   test("runs the middleware of a directory inside a group for unhandled requests", async () => {
     const res = await app().request("/posts/7/nope", { method: "DELETE" });
     assert.equal(res.status, 404);

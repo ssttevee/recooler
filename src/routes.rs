@@ -141,15 +141,16 @@ impl FarmPluginRecooler {
 
       // the first handlers of every registration of the route; `groupMiddleware` runs each one
       // once per request, since a request may go through several of the route's registrations
-      let scoped = middleware
-        .iter()
-        .map(|module_id| {
-          format!(
-            "groupMiddleware({}), ",
-            import_idents.identifier(module_id, "default")
-          )
-        })
-        .collect::<String>();
+      let mut scoped = String::new();
+      for module_id in middleware {
+        // keyed by the middleware module, so that one function re-exported by several groups still
+        // runs for each group
+        scoped += &format!(
+          "groupMiddleware({}, {}), ",
+          import_idents.identifier(module_id, "default"),
+          serde_json::to_string(&module_id.to_string()).unwrap(),
+        );
+      }
 
       let mut route_params_prefix = pathjs.clone() + ", " + scoped.as_str();
       let mut hono_app_obj = hono_ident.clone();
@@ -165,7 +166,7 @@ impl FarmPluginRecooler {
         .as_str();
 
         hono_app_obj = String::new();
-        route_params_prefix = scoped.clone();
+        route_params_prefix.clone_from(&scoped);
       }
 
       let mut request_methods = route.request_handlers.iter().collect::<Vec<_>>();
@@ -182,7 +183,7 @@ impl FarmPluginRecooler {
         .as_str();
 
         hono_app_obj = String::new();
-        route_params_prefix = scoped.clone();
+        route_params_prefix.clone_from(&scoped);
       }
 
       if hono_app_obj.is_empty() {
@@ -296,10 +297,11 @@ impl FarmPluginRecooler {
     let mut late_middlewares = String::new();
     for (use_path, module_id) in &plan.late_middlewares {
       late_middlewares += format!(
-        "{}.use({}, groupMiddleware({}));\n",
+        "{}.use({}, groupMiddleware({}, {}));\n",
         hono_ident,
         serde_json::to_string(use_path).unwrap(),
         import_idents.identifier(module_id, "default"),
+        serde_json::to_string(&module_id.to_string()).unwrap(),
       )
       .as_str();
     }
@@ -1002,8 +1004,6 @@ pub(crate) fn is_route_file(routes_dir: &str, file_path: &Path) -> bool {
       .is_some_and(|name| ROUTE_FILE_PATTERN.is_match(name))
 }
 
-/// Returns an error naming the files if a directory contains more than one of `files`, e.g. both a
-/// `layout.tsx` and a `layout.jsx`, which would be used for the same path.
 /// Returns a hono path with the names of its params removed, e.g. `/:id/x` and `/:slug/x` both
 /// give `/:/x`: hono registers both, but only the first ever matches.
 fn route_path_shape(hono_path: &str) -> String {
@@ -1050,6 +1050,8 @@ fn ensure_distinct_route_shapes(result: &ScanResult) -> Result<()> {
   Ok(())
 }
 
+/// Returns an error naming the files if a directory contains more than one of `files`, e.g. both a
+/// `layout.tsx` and a `layout.jsx`, which would be used for the same path.
 fn ensure_one_file_per_dir(kind: &str, files: &[PathBuf]) -> Result<()> {
   let mut files_by_dir = HashMap::<&Path, Vec<String>>::new();
   for file in files {
@@ -1841,6 +1843,75 @@ mod tests {
     ]);
     assert!(message.contains("middleware"), "{}", message);
     assert!(message.contains("has no default export"), "{}", message);
+  }
+
+  #[test]
+  fn group_middleware_starts_every_registration_of_the_group_routes() {
+    let fixture = Fixture::new(
+      &[
+        ("src/routes/(admin)/middleware.ts", "export default (c: any, next: any) => next();"),
+        ("src/routes/(admin)/admin/middleware.ts", "export default (c: any, next: any) => next();"),
+        (
+          "src/routes/(admin)/admin/index.tsx",
+          "export function onRequest(c: any, next: any) { return next(); }\nexport function onPost(c: any) { return c.text('posted'); }\nexport default () => <form hx-post={() => <p/>} />;",
+        ),
+        ("src/routes/(public)/index.tsx", PAGE),
+      ],
+      json!({ "src_dir": "src" }),
+    );
+    let app = fixture
+      .plugin
+      .generate_entrypoint_impl_module(&fixture.context, &Default::default())
+      .unwrap();
+
+    let admin_lines = app
+      .lines()
+      .filter(|line| line.contains("\"/admin\""))
+      .collect::<Vec<_>>();
+    // the actions middleware, the `onRequest`/`onPost` chain and the page handler
+    assert_eq!(admin_lines.len(), 3, "{}", app);
+    let group_key = "src/routes/(admin)/middleware.ts\")";
+    let dir_key = "src/routes/(admin)/admin/middleware.ts\")";
+    for line in &admin_lines {
+      // the group's middleware first, then that of the directory inside it, keyed by their modules
+      let group = line.find(group_key).unwrap_or_else(|| panic!("{}", line));
+      let dir = line.find(dir_key).unwrap_or_else(|| panic!("{}", line));
+      assert!(group < dir, "{}", line);
+      // every chained registration starts with both
+      let registrations = line.matches(".post(").count()
+        + line.matches(".all(").count()
+        + line.matches(".get(").count();
+      assert_eq!(
+        line.matches("groupMiddleware(").count(),
+        2 * registrations,
+        "{}",
+        line
+      );
+    }
+    // the public route has none
+    let public_line = app
+      .lines()
+      .find(|line| line.contains(".get(\"/\""))
+      .unwrap();
+    assert!(!public_line.contains("groupMiddleware"), "{}", public_line);
+    // the directory middleware inside the group is also used after the routes, the group's isn't
+    let late = app
+      .lines()
+      .filter(|line| line.contains(".use("))
+      .collect::<Vec<_>>();
+    assert_eq!(late.len(), 1, "{}", app);
+    assert!(
+      late[0].contains(".use(\"/admin/*\", groupMiddleware(") && late[0].contains(dir_key),
+      "{}",
+      late[0]
+    );
+    assert!(
+      app.lines().position(|line| line == late[0]).unwrap()
+        > app
+          .lines()
+          .position(|line| line.contains(".get(\"/admin\""))
+          .unwrap()
+    );
   }
 
   #[test]
