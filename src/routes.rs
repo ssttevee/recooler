@@ -815,6 +815,12 @@ pub(crate) fn file_to_route_path<P: AsRef<Path>>(route_dir: P, file_path: &Path)
   let mut relpath = file_path.relative_to(route_dir).unwrap();
   relpath.pop();
 
+  // the file is outside of the routes dir. Hidden directories, e.g. `.well-known`, are path
+  // segments like any other
+  if relpath.starts_with("..") {
+    return String::new();
+  }
+
   let path = relpath
     .iter()
     .map(|p| {
@@ -829,9 +835,6 @@ pub(crate) fn file_to_route_path<P: AsRef<Path>>(route_dir: P, file_path: &Path)
     })
     .collect::<Vec<String>>()
     .join("/");
-  if path.starts_with(".") {
-    return String::new();
-  }
 
   format!("/{}", path)
 }
@@ -1318,11 +1321,12 @@ mod tests {
   use farmfe_toolkit::script::parse_module;
   use std::{cmp::Ordering, collections::HashSet};
 
-  use std::path::PathBuf;
+  use std::path::{Path, PathBuf};
 
   use super::{
-    compare_route_paths, ensure_one_file_per_dir, fixture::Fixture, ignored_on_load_warning,
-    is_trace_stubbed, layout_wraps_route, prefetch_parse_syntax, RouteInfo, RoutePlan, ScanResult,
+    compare_route_paths, ensure_one_file_per_dir, file_to_route_path, fixture::Fixture,
+    ignored_on_load_warning, is_trace_stubbed, layout_wraps_route, prefetch_parse_syntax,
+    RouteInfo, RoutePlan, ScanResult,
   };
 
   fn scan_result(routes: &[&str], middlewares: &[&str]) -> ScanResult {
@@ -1836,6 +1840,63 @@ mod tests {
       "{}",
       sub
     );
+  }
+
+  #[test]
+  fn route_path_of_file() {
+    let route_path = |file: &str| file_to_route_path("src/routes", Path::new(file));
+    assert_eq!(route_path("src/routes/index.tsx"), "/");
+    assert_eq!(route_path("src/routes/about/index.tsx"), "/about");
+    assert_eq!(route_path("src/routes/(g)/[id]/index.tsx"), "/(g)/:id");
+    assert_eq!(route_path("src/routes/[[rest]]/index.tsx"), "/:rest{.+}");
+    assert_eq!(
+      route_path("src/routes/.well-known/security.txt/index.ts"),
+      "/.well-known/security.txt"
+    );
+    assert_eq!(
+      route_path("src/routes/.well-known/middleware.ts"),
+      "/.well-known"
+    );
+    assert_eq!(route_path("src/routes/..x/index.tsx"), "/..x");
+    assert_eq!(route_path("src/components/button.tsx"), "");
+  }
+
+  #[test]
+  fn scan_hidden_dirs() {
+    let fixture = Fixture::new(
+      &[
+        ("src/routes/index.tsx", PAGE),
+        ("src/routes/layout.tsx", LAYOUT),
+        (
+          "src/routes/.well-known/security.txt/index.tsx",
+          "export function onGet() {}",
+        ),
+        ("src/routes/.drafts/index.tsx", PAGE),
+        ("src/routes/.drafts/layout.tsx", LAYOUT),
+        (
+          "src/routes/.drafts/middleware.ts",
+          "export default () => {};",
+        ),
+      ],
+      json!({ "src_dir": "src" }),
+    );
+    let result = fixture.plugin.scan_routes_(&fixture.context).unwrap();
+
+    let mut paths = result.routes.keys().cloned().collect::<Vec<_>>();
+    paths.sort();
+    assert_eq!(paths, ["/", "/.drafts", "/.well-known/security.txt"]);
+    assert!(result.routes["/"].page_component.is_some());
+    assert_eq!(
+      result.routes["/.drafts"]
+        .page_component
+        .as_ref()
+        .unwrap()
+        .layouts
+        .len(),
+      2
+    );
+    assert!(result.middlewares.contains_key("/.drafts"));
+    assert!(!result.middlewares.contains_key(""));
   }
 
   #[test]
