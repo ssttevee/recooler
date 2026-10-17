@@ -831,9 +831,11 @@ impl<'a> VisitMut for ComponentTransformVisitor<'a> {
     });
 
     if has_action {
+      // `ctx: value` or the shorthand `ctx`
       let explicit_ctx_index = node.props.iter().position(|prop| match prop {
         PropOrSpread::Prop(prop) => match prop.as_ref() {
           Prop::KeyValue(prop) => prop_name(prop) == Some("ctx"),
+          Prop::Shorthand(ident) => ident.sym == "ctx",
           _ => false,
         },
         PropOrSpread::Spread(_) => false,
@@ -843,11 +845,13 @@ impl<'a> VisitMut for ComponentTransformVisitor<'a> {
         let PropOrSpread::Prop(prop) = node.props.remove(index) else {
           unreachable!()
         };
-        let Prop::KeyValue(prop) = *prop else {
-          unreachable!()
+        let explicit_ctx = match *prop {
+          Prop::KeyValue(prop) => prop.value,
+          Prop::Shorthand(ident) => Box::new(Expr::Ident(ident)),
+          _ => unreachable!(),
         };
 
-        let previous_ctx = self.explicit_action_ctx.replace(prop.value);
+        let previous_ctx = self.explicit_action_ctx.replace(explicit_ctx);
         node.visit_mut_children_with(self);
         self.explicit_action_ctx = previous_ctx;
         return;
@@ -1962,6 +1966,33 @@ mod tests {
     assert!(result.contains(
       "`/u/${encodeURIComponent(props.ctx.req.param(\"user-id\"))}/${encodeURIComponent(props.ctx.req.param(\"a.b\"))}/x?action="
     ));
+  }
+
+  #[test]
+  fn uses_explicit_action_context_from_object_props() {
+    for props in [
+      r#"{ ctx, "hx-post": () => 1 }"#,
+      r#"{ "hx-post": () => 1, ctx: ctx }"#,
+    ] {
+      let result = compact(&transform(&format!(
+        r#"
+          export default function C(props) {{
+            const ctx = props.rc;
+            return <button {{...{}}} />;
+          }}
+        "#,
+        props,
+      )));
+
+      assert!(
+        result.contains(
+          "{...{ \"hx-post\": `/article/${encodeURIComponent(ctx.req.param(\"id\"))}?action="
+        ),
+        "{}",
+        result
+      );
+      assert!(!result.contains("props.ctx"), "{}", result);
+    }
   }
 
   #[test]
