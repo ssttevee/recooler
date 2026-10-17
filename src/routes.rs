@@ -841,6 +841,23 @@ fn read_source_value_exports(path: &Path, config: &Config) -> Option<HashSet<Str
   Some(find_source_value_exports(&parsed.ast))
 }
 
+/// Returns the warning for a layout or the root component module that exports `onLoad`, which is
+/// silently ignored since only the `onLoad` of route modules is added to client scripts.
+fn ignored_on_load_warning(module: &Module) -> Option<String> {
+  let ModuleMetaData::Script(script) = module.meta.as_ref() else {
+    return None;
+  };
+
+  find_exports(&module.id, script)
+    .contains("onLoad")
+    .then(|| {
+      format!(
+        "[recooler] {}: the onLoad export never runs, since only the onLoad of route modules (index files) is added to client scripts; move it to the route modules that need it",
+        module.id.relative_path()
+      )
+    })
+}
+
 /// Returns whether the layout at `layout_path` wraps the page at `route_path`, i.e. whether
 /// [`LayoutTree::get_layouts_for_path`] returns it, which is when the path segments of the layout
 /// are a prefix of those of the page.
@@ -1054,12 +1071,16 @@ impl FarmPluginRecooler {
       context,
     )?;
 
+    let mut warnings = vec![];
+
     for layout_file in &dir_contents.layout_files {
+      let layout_deps = deps_map.get(layout_file).unwrap();
+      warnings.extend(ignored_on_load_warning(&layout_deps[0]));
       result.add_layout(
         file_to_route_path(&self.routes_dir, layout_file),
         &self.ids,
         // &self.get_module_dependencies(layout_file, context)?,
-        deps_map.get(layout_file).unwrap(),
+        layout_deps,
       )?;
     }
 
@@ -1084,6 +1105,7 @@ impl FarmPluginRecooler {
       // let root_deps = self.get_module_dependencies(&root_file, context)?;
       let root_deps = deps_map.get(root_file).unwrap();
       let root_module_id = root_deps[0].id.clone();
+      warnings.extend(ignored_on_load_warning(&root_deps[0]));
 
       result.root_component = Some(RootComponentInfo {
         head: find_head_export_type(&root_deps[0].meta.as_script().ast),
@@ -1103,6 +1125,13 @@ impl FarmPluginRecooler {
       );
     };
 
+    // the host prints these once its module graph is built
+    let mut log_store = context.log_store.lock();
+    for warning in warnings {
+      log_store.add_warning(warning);
+    }
+    drop(log_store);
+
     // println!("scan found {} routes", result.routes.len());
 
     Ok(result)
@@ -1113,10 +1142,17 @@ impl FarmPluginRecooler {
 mod tests {
   use std::{cmp::Ordering, collections::HashSet};
 
-  use farmfe_core::module::ModuleId;
+  use farmfe_core::{
+    module::{Module, ModuleId, ModuleMetaData, ScriptModuleMetaData},
+    swc_common::{Globals, GLOBALS},
+    swc_ecma_ast::EsVersion,
+    swc_ecma_parser::{Syntax, TsSyntax},
+  };
+  use farmfe_toolkit::script::parse_module;
 
   use super::{
-    compare_route_paths, is_trace_stubbed, layout_wraps_route, RouteInfo, RoutePlan, ScanResult,
+    compare_route_paths, ignored_on_load_warning, is_trace_stubbed, layout_wraps_route, RouteInfo,
+    RoutePlan, ScanResult,
   };
 
   fn scan_result(routes: &[&str], middlewares: &[&str]) -> ScanResult {
@@ -1374,6 +1410,61 @@ mod tests {
         "src/routes/about/index.tsx",
       ]
     );
+  }
+
+  fn on_load_warning(path: &str, source: &str) -> Option<String> {
+    GLOBALS.set(&Globals::new(), || {
+      let parsed = parse_module(
+        path,
+        source,
+        Syntax::Typescript(TsSyntax {
+          tsx: true,
+          ..Default::default()
+        }),
+        EsVersion::EsNext,
+      )
+      .unwrap();
+      let mut module = Module::new(ModuleId::new(path, "", "."));
+      module.meta = Box::new(ModuleMetaData::Script(ScriptModuleMetaData {
+        ast: parsed.ast,
+        ..Default::default()
+      }));
+      ignored_on_load_warning(&module)
+    })
+  }
+
+  #[test]
+  fn warns_about_on_load_of_layout_and_root_modules() {
+    let warning = on_load_warning(
+      "src/routes/layout.tsx",
+      "export default (Content) => Content;\nexport function onLoad() {}",
+    )
+    .unwrap();
+    assert!(warning.starts_with("[recooler] src/routes/layout.tsx: the onLoad export never runs"));
+
+    for source in [
+      "export const onLoad = () => {};",
+      "const load = () => {}; export { load as onLoad };",
+      r#"export { onLoad } from "./client";"#,
+    ] {
+      assert!(
+        on_load_warning("src/root.tsx", source).is_some(),
+        "{}",
+        source
+      );
+    }
+
+    for source in [
+      "export default (Content) => Content;",
+      "export function onload() {}",
+      "function onLoad() {} export default onLoad;",
+    ] {
+      assert!(
+        on_load_warning("src/root.tsx", source).is_none(),
+        "{}",
+        source
+      );
+    }
   }
 
   #[test]
