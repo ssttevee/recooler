@@ -548,6 +548,8 @@ impl FarmPluginRecooler {
   ) -> Result<std::result::Result<String, Vec<String>>> {
     let mut config = context.config.as_ref().clone();
     config.progress = false;
+    // see `nested_compile::client_script_plugins`
+    config.lazy_compilation = false;
     *config.tree_shaking = BoolOrObj::Bool(true);
     *config.minify = BoolOrObj::Bool(true);
     *config.sourcemap = SourcemapConfig::Bool(false);

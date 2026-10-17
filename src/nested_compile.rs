@@ -38,6 +38,9 @@ pub(crate) fn shared_host_plugins(context: &Arc<CompilationContext>) -> Vec<Arc<
     .collect()
 }
 
+/// The name of farm's `FarmPluginLazyCompilation`.
+const LAZY_COMPILATION_PLUGIN_NAME: &str = "FarmPluginLazyCompilation";
+
 /// Returns the plugins of a client script compile with the config `config`, given the
 /// `host_plugins` shared with it, see [`shared_host_plugins`].
 ///
@@ -45,6 +48,10 @@ pub(crate) fn shared_host_plugins(context: &Arc<CompilationContext>) -> Vec<Arc<
 /// host config on first use, which a client script must not have (see
 /// [`force_client_script_output`]), and its resolve cache isn't keyed by the target, so e.g. the
 /// `node` condition of package exports resolved for a node host would be reused.
+///
+/// The lazy compilation plugin, which the host has in dev, is left out: it doesn't check whether
+/// lazy compilation is enabled, and it would turn every dynamic import into a request to the dev
+/// server through the farm runtime, which a client script doesn't have.
 pub(crate) fn client_script_plugins(
   host_plugins: Vec<Arc<dyn Plugin>>,
   config: &Config,
@@ -53,7 +60,9 @@ pub(crate) fn client_script_plugins(
 
   let mut plugins = host_plugins
     .into_iter()
-    .filter(|plugin| plugin.name() != resolve_plugin.name())
+    .filter(|plugin| {
+      plugin.name() != resolve_plugin.name() && plugin.name() != LAZY_COMPILATION_PLUGIN_NAME
+    })
     .collect::<Vec<_>>();
   plugins.push(Arc::new(resolve_plugin));
   plugins.push(Arc::new(farmfe_plugin_minify::FarmPluginMinify::new(
@@ -582,5 +591,18 @@ mod tests {
     let names = plugin_names(&plugins);
     assert!(names.contains(&"FarmPluginScript"));
     assert!(names.contains(&"FarmPluginRecooler"));
+  }
+
+  #[test]
+  fn client_script_plugins_leave_out_lazy_compilation() {
+    let host_plugins: Vec<Arc<dyn Plugin>> = vec![
+      Arc::new(NamedPlugin("FarmPluginLazyCompilation")),
+      Arc::new(NamedPlugin("FarmPluginScript")),
+    ];
+
+    let plugins = client_script_plugins(host_plugins, &Config::default());
+    let names = plugin_names(&plugins);
+    assert!(!names.contains(&"FarmPluginLazyCompilation"));
+    assert!(names.contains(&"FarmPluginScript"));
   }
 }
