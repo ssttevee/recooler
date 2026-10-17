@@ -11,7 +11,10 @@ use farmfe_core::{
     module_graph::ModuleGraph, module_group::ModuleGroupGraph, Module, ModuleId, ModuleMetaData,
   },
   plugin::*,
-  resource::resource_pot::{ResourcePot, ResourcePotInfo, ResourcePotMetaData},
+  resource::{
+    resource_pot::{ResourcePot, ResourcePotInfo, ResourcePotMetaData},
+    Resource, ResourceType,
+  },
   stats::Stats,
 };
 use farmfe_toolkit::script::constant::RUNTIME_SUFFIX;
@@ -53,6 +56,32 @@ pub(crate) fn nested_compile_input(
     .collect::<HashMap<_, _>>();
   nested_input.extend(input);
   nested_input
+}
+
+/// Returns the script generated for the entry named `entry_name` by a nested compile, given its
+/// module graph `entries`, `resource_pots` and `resources`.
+///
+/// Resources are named by the host's `output.entryFilename` and `output.filename` (e.g.
+/// `[entryName].[hash].js`), so the script is found through the resource pot of the entry module
+/// instead of by its name.
+pub(crate) fn entry_script<'a>(
+  entries: &HashMap<ModuleId, String>,
+  resource_pots: &[&ResourcePot],
+  resources: &'a HashMap<String, Resource>,
+  entry_name: &str,
+) -> Option<&'a Resource> {
+  resource_pots
+    .iter()
+    .filter(|pot| {
+      pot
+        .entry_module
+        .as_ref()
+        .and_then(|module_id| entries.get(module_id))
+        .is_some_and(|name| name == entry_name)
+    })
+    .flat_map(|pot| pot.resources())
+    .filter_map(|name| resources.get(name))
+    .find(|resource| matches!(resource.resource_type, ResourceType::Js))
 }
 
 /// A host plugin shared with a nested compile that forwards every hook to the wrapped plugin,
@@ -310,9 +339,18 @@ impl Plugin for SharedHostPlugin {
 mod tests {
   use std::{collections::HashMap, sync::Arc};
 
-  use farmfe_core::{config::Config, error::Result, plugin::Plugin};
+  use farmfe_core::{
+    config::Config,
+    error::Result,
+    module::ModuleId,
+    plugin::Plugin,
+    resource::{
+      resource_pot::{ResourcePot, ResourcePotType},
+      Resource, ResourceType,
+    },
+  };
 
-  use super::{nested_compile_input, SharedHostPlugin};
+  use super::{entry_script, nested_compile_input, SharedHostPlugin};
 
   struct ConfigPlugin;
 
@@ -384,5 +422,47 @@ mod tests {
         ),
       ])
     );
+  }
+
+  fn resource(name: &str, resource_type: ResourceType) -> (String, Resource) {
+    (
+      name.to_string(),
+      Resource {
+        name: name.to_string(),
+        bytes: name.as_bytes().to_vec(),
+        resource_type,
+        ..Default::default()
+      },
+    )
+  }
+
+  #[test]
+  fn entry_script_finds_the_script_of_the_entry_by_its_pot() {
+    let client_module = ModuleId::from("recooler:@src/routes/index.tsx");
+    let entries = HashMap::from([(client_module.clone(), "client".to_string())]);
+
+    // named like `entryFilename: "[entryName].[hash].js"`, with a source map
+    let mut client_pot = ResourcePot::new("main".to_string(), ResourcePotType::Js);
+    client_pot.entry_module = Some(client_module);
+    client_pot.add_resource("client.0123abcd.js.map".to_string());
+    client_pot.add_resource("client.0123abcd.js".to_string());
+
+    // e.g. a dynamically imported chunk
+    let mut other_pot = ResourcePot::new("chunk".to_string(), ResourcePotType::Js);
+    other_pot.add_resource("chunk.js".to_string());
+
+    let resources = HashMap::from([
+      resource(
+        "client.0123abcd.js.map",
+        ResourceType::SourceMap("js".to_string()),
+      ),
+      resource("client.0123abcd.js", ResourceType::Js),
+      resource("chunk.js", ResourceType::Js),
+    ]);
+
+    let script = entry_script(&entries, &[&other_pot, &client_pot], &resources, "client").unwrap();
+    assert_eq!(script.name, "client.0123abcd.js");
+
+    assert!(entry_script(&entries, &[&other_pot, &client_pot], &resources, "other").is_none());
   }
 }

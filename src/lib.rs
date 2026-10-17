@@ -185,6 +185,8 @@ impl FarmPluginRecooler {
 }
 
 const CLIENT_MODULE_PREFIX: &str = "recooler:@";
+/// The name of the entry of a client script compile.
+const CLIENT_ENTRY_NAME: &str = "client";
 const ENTRYPOINT_MODULE: &str = "recooler::app";
 /// The module that [`ENTRYPOINT_MODULE`] re-exports the generated app from, see
 /// `generate_entrypoint_module`.
@@ -552,7 +554,7 @@ impl FarmPluginRecooler {
     config.input = nested_compile::nested_compile_input(
       &context.config,
       [(
-        String::from("client"),
+        String::from(CLIENT_ENTRY_NAME),
         format!("{}{}", CLIENT_MODULE_PREFIX, module_id.relative_path()),
       )],
     );
@@ -570,7 +572,7 @@ impl FarmPluginRecooler {
       if let Some(entry) = module_graph
         .entries
         .iter()
-        .find_map(|(id, name)| (name == "client").then_some(id))
+        .find_map(|(id, name)| (name == CLIENT_ENTRY_NAME).then_some(id))
       {
         let banned = banned_imports::banned_client_modules(&module_graph, entry, |id| {
           banned_imports::is_banned_module(&self.client_banned_imports, id)
@@ -581,10 +583,23 @@ impl FarmPluginRecooler {
       }
     }
 
-    let resource_map = compiler.context().resources_map.lock();
-    Ok(Ok(
-      String::from_utf8(resource_map.get("client.js").unwrap().bytes.clone()).unwrap(),
-    ))
+    let context = compiler.context();
+    let entries = context.module_graph.read().entries.clone();
+    let resource_pot_map = context.resource_pot_map.read();
+    let resources = context.resources_map.lock();
+    let script = nested_compile::entry_script(
+      &entries,
+      &resource_pot_map.resource_pots(),
+      &resources,
+      CLIENT_ENTRY_NAME,
+    )
+    .ok_or_else(|| {
+      CompilationError::GenericError(format!(
+        "client script compile for {} generated no script",
+        module_id.relative_path()
+      ))
+    })?;
+    Ok(Ok(String::from_utf8_lossy(&script.bytes).into_owned()))
   }
 
   fn generate_metadata_module(&self) -> Result<String> {
