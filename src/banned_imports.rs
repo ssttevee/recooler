@@ -4,7 +4,39 @@
 
 use std::collections::{HashMap, VecDeque};
 
-use farmfe_core::module::{module_graph::ModuleGraph, ModuleId};
+use farmfe_core::{
+  module::{module_graph::ModuleGraph, ModuleId},
+  regex::Regex,
+};
+
+/// Returns the forms of a module id that the `client_banned_imports` patterns are matched against,
+/// without the query: the module's path relative to the project root, and for a module in a
+/// `node_modules` directory, its path inside of the last one, e.g. `faunadb/index.js` for
+/// `../../../Library/pnpm/store/v10/links/faunadb/4.8.0/hash/node_modules/faunadb/index.js` and
+/// `@scope/pkg/x.js` for `node_modules/.pnpm/@scope+pkg@1.0.0/node_modules/@scope/pkg/x.js`.
+fn module_id_forms(id: &ModuleId) -> Vec<&str> {
+  let path = id.relative_path();
+  let mut forms = vec![path];
+  let package_path = ["node_modules/", "node_modules\\"]
+    .iter()
+    .filter_map(|segment| {
+      let i = path.rfind(segment)?;
+      // a whole segment, not e.g. `my_node_modules/`
+      (i == 0 || path[..i].ends_with(['/', '\\'])).then(|| &path[i + segment.len()..])
+    })
+    .min_by_key(|package_path| package_path.len());
+  forms.extend(package_path);
+  forms
+}
+
+/// Whether any of the `client_banned_imports` patterns matches a module id, see
+/// [`module_id_forms`].
+pub(crate) fn is_banned_module(patterns: &[Regex], id: &ModuleId) -> bool {
+  let forms = module_id_forms(id);
+  patterns
+    .iter()
+    .any(|pattern| forms.iter().any(|form| pattern.is_match(form)))
+}
 
 /// Returns the modules of a compiled client script's graph that are `banned`, sorted by id, each
 /// followed by the shortest chain of modules that imports it from `entry`, e.g.
@@ -70,7 +102,70 @@ mod tests {
     Module, ModuleId,
   };
 
-  use super::banned_client_modules;
+  use farmfe_core::regex::Regex;
+
+  use super::{banned_client_modules, is_banned_module, module_id_forms};
+
+  #[test]
+  fn matches_module_ids_without_query_and_by_package_path() {
+    let forms = |id: &str| {
+      module_id_forms(&ModuleId::from(id))
+        .into_iter()
+        .map(String::from)
+        .collect::<Vec<_>>()
+    };
+    assert_eq!(forms("src/lib/db.ts"), vec!["src/lib/db.ts"]);
+    assert_eq!(
+      forms("src/lib/db.ts?recooler-handlers"),
+      vec!["src/lib/db.ts"]
+    );
+    assert_eq!(
+      forms("node_modules/faunadb/index.js?raw"),
+      vec!["node_modules/faunadb/index.js", "faunadb/index.js"]
+    );
+    // pnpm's global store, outside of the project
+    assert_eq!(
+      forms(
+        "../../../Library/pnpm/store/v10/links/faunadb/4.8.0/abc/node_modules/faunadb/index.js"
+      ),
+      vec![
+        "../../../Library/pnpm/store/v10/links/faunadb/4.8.0/abc/node_modules/faunadb/index.js",
+        "faunadb/index.js"
+      ]
+    );
+    // pnpm's virtual store, the last `node_modules` is the package's
+    assert_eq!(
+      forms("node_modules/.pnpm/@scope+pkg@1.0.0/node_modules/@scope/pkg/x.js")[1],
+      "@scope/pkg/x.js"
+    );
+    // a workspace package's own dependencies
+    assert_eq!(
+      forms("../common/node_modules/faunadb/index.js")[1],
+      "faunadb/index.js"
+    );
+    assert_eq!(forms("../common/src/db.ts"), vec!["../common/src/db.ts"]);
+    assert_eq!(
+      forms("src/my_node_modules/x.js"),
+      vec!["src/my_node_modules/x.js"]
+    );
+    assert_eq!(
+      forms("C:\\app\\node_modules\\faunadb\\index.js")[1],
+      "faunadb\\index.js"
+    );
+
+    let patterns = [
+      Regex::new("^faunadb/").unwrap(),
+      Regex::new(r"lib/db\.ts$").unwrap(),
+    ];
+    let banned = |id: &str| is_banned_module(&patterns, &ModuleId::from(id));
+    assert!(banned(
+      "../../../Library/pnpm/store/v10/links/faunadb/4.8.0/abc/node_modules/faunadb/index.js"
+    ));
+    assert!(banned("node_modules/faunadb/index.js"));
+    assert!(banned("src/lib/db.ts?recooler-handlers"));
+    assert!(!banned("node_modules/not-faunadb/index.js"));
+    assert!(!banned("src/faunadb/index.js"));
+  }
 
   fn graph(edges: &[(&str, &str)]) -> ModuleGraph {
     let mut graph = ModuleGraph::new();

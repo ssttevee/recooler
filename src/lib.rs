@@ -573,10 +573,7 @@ impl FarmPluginRecooler {
         .find_map(|(id, name)| (name == "client").then_some(id))
       {
         let banned = banned_imports::banned_client_modules(&module_graph, entry, |id| {
-          self
-            .client_banned_imports
-            .iter()
-            .any(|pattern| pattern.is_match(&id.to_string()))
+          banned_imports::is_banned_module(&self.client_banned_imports, id)
         });
         if !banned.is_empty() {
           return Ok(Err(banned));

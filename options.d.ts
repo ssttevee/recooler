@@ -35,9 +35,13 @@ export interface IPluginOptions {
    * database clients. Unset by default, which disables the checks.
    *
    * Each pattern is searched for (unanchored) in the specifier of every import kept for an event
-   * handler or route `onLoad`, e.g. `"faunadb"` or `"../lib/db"`, and in the id of every module in
-   * each compiled client script, which is its path relative to the project root, e.g.
-   * `"node_modules/faunadb/index.js"`. Any match fails the build.
+   * handler or route `onLoad`, e.g. `"faunadb"` or `"../lib/db"`, and in every module included in
+   * each compiled client script. A module is matched by its path relative to the project root, e.g.
+   * `"node_modules/faunadb/index.js"`, `"src/lib/db.ts"` or `"../common/src/db.ts"`, and if it is
+   * in a `node_modules` directory, also by its path inside of the last one, e.g.
+   * `"faunadb/index.js"` or `"@scope/pkg/x.js"`, both without any `?query`. So `"^faunadb/"` matches
+   * the package wherever it is installed, e.g. in pnpm's global store outside of the project, whose
+   * modules' paths relative to the project root start with `"../"`. Any match fails the build.
    */
   client_banned_imports?: string[];
 }
