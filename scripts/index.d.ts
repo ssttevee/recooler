@@ -1,3 +1,3 @@
-import type { IPluginOptions } from '../options.d';
-declare const binPath: (options?: IPluginOptions) => [string, IPluginOptions];
+/** Path to the plugin binary for the current platform. */
+declare const binPath: string;
 export default binPath;

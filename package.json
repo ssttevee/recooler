@@ -2,7 +2,7 @@
   "name": "farm-plugin-recooler",
   "version": "0.0.26",
   "main": "scripts/index.js",
-  "types": "scripts/index.d.ts",
+  "types": "scripts/func.d.ts",
   "type": "module",
   "license": "MIT",
   "repository": {
@@ -34,13 +34,18 @@
   },
   "exports": {
     ".": {
-      "import": "./scripts/func.js",
-      "types": "./scripts/index.d.ts",
-      "default": "./scripts/index.js"
+      "import": {
+        "types": "./scripts/func.d.ts",
+        "default": "./scripts/func.js"
+      },
+      "default": {
+        "types": "./scripts/index.d.ts",
+        "default": "./scripts/index.js"
+      }
     },
     "./helpers": {
-      "import": "./src/helpers.js",
       "types": "./src/helpers.d.ts",
+      "import": "./src/helpers.js",
       "default": "./src/helpers.js"
     },
     "./package.json": "./package.json"
