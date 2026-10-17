@@ -2445,13 +2445,17 @@ mod tests {
     );
     // but not rendered as an attribute of an html element
     assert!(
-      result.contains("<a {...{ \"hx-post\": `/article/${encodeURIComponent(rc.req.param(\"id\"))}?action="),
+      result.contains(
+        "<a {...{ \"hx-post\": `/article/${encodeURIComponent(rc.req.param(\"id\"))}?action="
+      ),
       "{}",
       result
     );
     // nor kept in an object that isn't itself the spread props
     assert!(
-      result.contains("x: { \"hx-post\": `/article/${encodeURIComponent(rc.req.param(\"id\"))}?action="),
+      result.contains(
+        "x: { \"hx-post\": `/article/${encodeURIComponent(rc.req.param(\"id\"))}?action="
+      ),
       "{}",
       result
     );
