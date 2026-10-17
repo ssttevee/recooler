@@ -724,6 +724,12 @@ impl FarmPluginRecooler {
     source_paths: Vec<PathBuf>,
     context: &Arc<CompilationContext>,
   ) -> Result<HashMap<PathBuf, Vec<Module>>> {
+    // e.g. an empty routes dir and no root component, which is an app without any routes. There is
+    // nothing to trace, and the trace compile would fail without any input
+    if source_paths.is_empty() {
+      return Ok(HashMap::new());
+    }
+
     let mut config = context.config.as_ref().clone();
     config.progress = false;
     config.input = nested_compile_input(
@@ -733,7 +739,7 @@ impl FarmPluginRecooler {
         .map(|sp| {
           let s = sp.to_str().unwrap().to_string();
           if let Ok(canonical) = sp.canonicalize() {
-            Ok(vec![(s, canonical.to_str().unwrap().to_string())])
+            Ok((s, canonical.to_str().unwrap().to_string()))
           } else {
             Err(CompilationError::GenericError(format!(
               "failed to find source: {}",
@@ -741,8 +747,7 @@ impl FarmPluginRecooler {
             )))
           }
         })
-        .reduce(|a, b| Ok(a?.into_iter().chain(b?.into_iter()).collect()))
-        .unwrap()?,
+        .collect::<Result<Vec<_>>>()?,
     );
     config.persistent_cache = Box::new(self.trace_persistent_cache_config(&config));
     let canonical_path_map = config.input.clone();
@@ -1162,9 +1167,91 @@ impl FarmPluginRecooler {
 }
 
 #[cfg(test)]
-mod tests {
-  use std::{cmp::Ordering, collections::HashSet};
+pub(crate) mod fixture {
+  use std::{
+    collections::HashMap,
+    fs,
+    path::PathBuf,
+    sync::{
+      atomic::{AtomicUsize, Ordering},
+      Arc,
+    },
+  };
 
+  use farmfe_compiler::Compiler;
+  use farmfe_core::{
+    config::{persistent_cache::PersistentCacheConfig, Config},
+    context::CompilationContext,
+    serde_json,
+  };
+
+  use crate::FarmPluginRecooler;
+
+  /// A project in a new temporary directory, with a host compilation context that has the farm
+  /// internal plugins and the plugin, so that tests can run the route scan's trace compile.
+  pub(crate) struct Fixture {
+    pub(crate) dir: PathBuf,
+    pub(crate) plugin: Arc<FarmPluginRecooler>,
+    pub(crate) context: Arc<CompilationContext>,
+  }
+
+  impl Fixture {
+    /// Writes `files` (paths relative to the project dir and their contents) and creates the
+    /// plugin with `options`, in which `src_dir` and `routes_dir` are relative to the project dir.
+    pub(crate) fn new(files: &[(&str, &str)], options: serde_json::Value) -> Self {
+      static COUNTER: AtomicUsize = AtomicUsize::new(0);
+      let dir = std::env::temp_dir().join(format!(
+        "recooler-test-{}-{}",
+        std::process::id(),
+        COUNTER.fetch_add(1, Ordering::SeqCst)
+      ));
+      let _ = fs::remove_dir_all(&dir);
+      fs::create_dir_all(&dir).unwrap();
+      for (path, content) in files {
+        let path = dir.join(path);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, content).unwrap();
+      }
+
+      let mut options = options;
+      for option in ["src_dir", "routes_dir"] {
+        if let Some(value) = options.get_mut(option) {
+          *value = dir.join(value.as_str().unwrap()).to_str().unwrap().into();
+        }
+      }
+
+      let config = Config {
+        input: HashMap::new(),
+        progress: false,
+        persistent_cache: Box::new(PersistentCacheConfig::Bool(false)),
+        ..Default::default()
+      };
+      let plugin = Arc::new(FarmPluginRecooler::new(&config, options.to_string()));
+      assert!(
+        plugin.option_errors.is_empty(),
+        "{:?}",
+        plugin.option_errors
+      );
+      let compiler = Compiler::new(config, vec![plugin.clone() as _]).unwrap();
+
+      Self {
+        dir,
+        plugin,
+        context: compiler.context().clone(),
+      }
+    }
+  }
+
+  impl Drop for Fixture {
+    fn drop(&mut self) {
+      let _ = fs::remove_dir_all(&self.dir);
+    }
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use farmfe_core::serde_json::json;
   use farmfe_core::{
     module::{Module, ModuleId, ModuleMetaData, ModuleType, ScriptModuleMetaData},
     swc_common::{Globals, GLOBALS},
@@ -1172,10 +1259,11 @@ mod tests {
     swc_ecma_parser::{Syntax, TsSyntax},
   };
   use farmfe_toolkit::script::parse_module;
+  use std::{cmp::Ordering, collections::HashSet};
 
   use super::{
-    compare_route_paths, ignored_on_load_warning, is_trace_stubbed, layout_wraps_route,
-    prefetch_parse_syntax, RouteInfo, RoutePlan, ScanResult,
+    compare_route_paths, fixture::Fixture, ignored_on_load_warning, is_trace_stubbed,
+    layout_wraps_route, prefetch_parse_syntax, RouteInfo, RoutePlan, ScanResult,
   };
 
   fn scan_result(routes: &[&str], middlewares: &[&str]) -> ScanResult {
@@ -1507,6 +1595,19 @@ mod tests {
         "{}",
         source
       );
+    }
+  }
+
+  #[test]
+  fn scan_without_route_files_or_root_component() {
+    for files in [
+      vec![("src/routes/.keep", "")],
+      vec![("src/routes/util.ts", "export const x = 1;")],
+    ] {
+      let fixture = Fixture::new(&files, json!({ "src_dir": "src" }));
+      let result = fixture.plugin.scan_routes_(&fixture.context).unwrap();
+      assert!(result.routes.is_empty());
+      assert!(result.root_component.is_none());
     }
   }
 
