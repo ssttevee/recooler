@@ -3,8 +3,52 @@ on:
   pull_request:
     branches:
       - main
+  push:
+    branches:
+      - main
 
 jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Installs the toolchain and components pinned in rust-toolchain.toml and caches cargo
+      # artifacts. The empty rustflags stop the action from defaulting to `-D warnings`, so tests
+      # build the same way as they do locally.
+      - name: Setup Rust
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          rustflags: ""
+
+      - name: Cargo test
+        run: cargo test
+
+      # TODO: make this blocking once the existing clippy::all violations in the crate are fixed.
+      # The crate has `#![deny(clippy::all)]`, so today this step fails on lints that predate it.
+      - name: Cargo clippy
+        run: cargo clippy --all-targets
+        continue-on-error: true
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9.4.0
+          run_install: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.x
+          cache: "pnpm"
+
+      - name: Install Dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Node tests
+        run: pnpm run test
+
   call-rust-build:
     uses: ./.github/workflows/build.yaml
 
