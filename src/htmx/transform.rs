@@ -18,7 +18,8 @@ use crate::es_ast_helpers::is_fn;
 use super::{FormActionMethod, LocalHandlerIdentGenerator};
 
 lazy_static! {
-  static ref RE_PATH_PARAM: Regex = Regex::new(r"/:(\w+)(\{.+?\}|\?)?(?:/|$)").unwrap();
+  /// A path param, whose name is anything up to its pattern like in hono, e.g. `[user-id]`.
+  static ref RE_PATH_PARAM: Regex = Regex::new(r"/:([^/{}?]+)(\{.+?\}|\?)?(?:/|$)").unwrap();
 }
 
 const HELPERS_MODULE: &str = "farm-plugin-recooler/helpers";
@@ -1944,6 +1945,22 @@ mod tests {
     let result = compact(&transform_at("/files/:rest{.+}", source));
     assert!(result.contains(
       "`/files/${props.ctx.req.param(\"rest\").split(\"/\").map(encodeURIComponent).join(\"/\")}?action="
+    ));
+  }
+
+  #[test]
+  fn reads_route_params_with_any_name() {
+    let result = compact(&transform_at(
+      "/u/:user-id/:a.b/x",
+      r#"
+        export default function C(props) {
+          return <button hx-post={() => 1} />;
+        }
+      "#,
+    ));
+
+    assert!(result.contains(
+      "`/u/${encodeURIComponent(props.ctx.req.param(\"user-id\"))}/${encodeURIComponent(props.ctx.req.param(\"a.b\"))}/x?action="
     ));
   }
 
