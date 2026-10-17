@@ -148,10 +148,11 @@ impl FarmPluginRecooler {
             default: true,
             name: DEFAULT_ROUTE_HANDLER_IDENT.to_string(),
           },
+          // a null name imports the default export, like when it is omitted
           RouteHandlerFactoryInput::Tuple2((module, name)) => ModuleSymbol {
             module: module,
             default: name.is_none(),
-            name: name.unwrap(),
+            name: name.unwrap_or_else(|| DEFAULT_ROUTE_HANDLER_IDENT.to_string()),
           },
         },
       ),
