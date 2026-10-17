@@ -17,5 +17,8 @@
   "license": "MIT",
   "engines": {
     "node": ">= 10"
-  }
+  },
+  "libc": [
+    "musl"
+  ]
 }
