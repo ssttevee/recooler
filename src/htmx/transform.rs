@@ -18,7 +18,7 @@ use crate::es_ast_helpers::is_fn;
 use super::{FormActionMethod, LocalHandlerIdentGenerator};
 
 lazy_static! {
-  static ref RE_PATH_PARAM: Regex = Regex::new(r"/:(\w+)(?:\{.+?\}|\?)?(?:/|$)").unwrap();
+  static ref RE_PATH_PARAM: Regex = Regex::new(r"/:(\w+)(\{.+?\}|\?)?(?:/|$)").unwrap();
 }
 
 const HELPERS_MODULE: &str = "farm-plugin-recooler/helpers";
@@ -108,7 +108,7 @@ pub(crate) fn transform_module(
 fn parse_route_pathname(route_pathname: String, atom_store: &mut AtomStore) -> RoutePathname {
   let mut pos: usize = 0;
   let mut parts: Vec<String> = vec![];
-  let mut params: Vec<Atom> = vec![];
+  let mut params: Vec<RouteParam> = vec![];
   while pos < route_pathname.len() {
     if let Some(capture) = RE_PATH_PARAM.captures_at(route_pathname.as_str(), pos) {
       let c = capture.get(1).unwrap();
@@ -119,7 +119,11 @@ fn parse_route_pathname(route_pathname: String, atom_store: &mut AtomStore) -> R
           - 1]
           .to_string(),
       );
-      params.push(atom_store.atom(c.as_str()));
+      params.push(RouteParam {
+        name: atom_store.atom(c.as_str()),
+        // a param with a pattern, e.g. `:rest{.+}`, may span several path segments
+        multi_segment: capture.get(2).is_some_and(|p| p.as_str().starts_with('{')),
+      });
 
       let m = capture.get(0).unwrap();
       pos = m.end();
@@ -146,8 +150,14 @@ enum RoutePathname {
   Fixed(String),
   Parameterized {
     parts: Vec<String>,
-    params: Vec<Atom>,
+    params: Vec<RouteParam>,
   },
+}
+
+#[derive(Clone)]
+struct RouteParam {
+  name: Atom,
+  multi_segment: bool,
 }
 
 /// The outermost function of a parameterized route module, whose first param is assumed to be the
@@ -218,9 +228,18 @@ impl<'a> ComponentTransformVisitor<'a> {
   }
 
   fn call(&mut self, callee: &str, args: Vec<Box<Expr>>) -> Box<Expr> {
+    let callee = Box::new(Expr::Ident(self.ident(callee)));
+    self.call_expr(callee, args)
+  }
+
+  fn call_expr(
+    &mut self,
+    callee: Box<Expr>,
+    args: impl IntoIterator<Item = Box<Expr>>,
+  ) -> Box<Expr> {
     Box::new(Expr::Call(CallExpr {
       span: Default::default(),
-      callee: Callee::Expr(Box::new(Expr::Ident(self.ident(callee)))),
+      callee: Callee::Expr(callee),
       args: args.into_iter().map(ExprOrSpread::from).collect(),
       type_args: None,
     }))
@@ -386,15 +405,29 @@ impl<'a> ComponentTransformVisitor<'a> {
             return self.tpl(vec![String::new()], vec![]);
           };
 
+          // `param()` returns the decoded value, which must be encoded again for the url
           let req = self.member(ctx_expr, "req");
           let param_fn = self.member(req, "param");
-          let param_lit = self.str_lit(param);
-          exprs.push(Box::new(Expr::Call(CallExpr {
+          let param_lit = self.str_lit(&param.name);
+          let value = Box::new(Expr::Call(CallExpr {
             span: Default::default(),
             callee: Callee::Expr(param_fn),
             args: vec![ExprOrSpread::from(param_lit)],
             type_args: None,
-          })));
+          }));
+          exprs.push(if param.multi_segment {
+            // `value.split("/").map(encodeURIComponent).join("/")` keeps the segment separators
+            let slash = self.str_lit("/");
+            let split_fn = self.member(value, "split");
+            let segments = self.call_expr(split_fn, vec![slash.clone()]);
+            let map_fn = self.member(segments, "map");
+            let encode_fn = Box::new(Expr::Ident(self.ident("encodeURIComponent")));
+            let encoded = self.call_expr(map_fn, vec![encode_fn]);
+            let join_fn = self.member(encoded, "join");
+            self.call_expr(join_fn, vec![slash])
+          } else {
+            self.call("encodeURIComponent", vec![value])
+          });
         }
         quasis.push(format!("{}{}", parts[parts.len() - 1], query));
         (quasis, exprs)
@@ -1870,7 +1903,7 @@ mod tests {
 
     // the inner action uses the outer action's ctx, and the outer action captures `a` for it
     assert!(result.contains("_action$post$1 = wrapActionWithPayload(({ a })=>()=>f(a)"));
-    assert!(result.contains("({ a })=>(__recooler_ctx)=><i hx-post={`/article/${__recooler_ctx.req.param(\"id\")}?action="));
+    assert!(result.contains("({ a })=>(__recooler_ctx)=><i hx-post={`/article/${encodeURIComponent(__recooler_ctx.req.param(\"id\"))}?action="));
     assert!(!result.contains("{ a, props }"));
   }
 
@@ -1887,10 +1920,31 @@ mod tests {
 
     // the outer action's url uses `rc`, the inner one the outer action's ctx param, so the outer
     // action does not capture the hono context
-    assert!(result.contains("<form hx-post={`/article/${rc.req.param(\"id\")}?action="));
-    assert!(result.contains("async (ctx)=><button hx-post={`/article/${ctx.req.param(\"id\")}?action="));
+    assert!(result
+      .contains("<form hx-post={`/article/${encodeURIComponent(rc.req.param(\"id\"))}?action="));
+    assert!(result.contains("async (ctx)=><button hx-post={`/article/${encodeURIComponent(ctx.req.param(\"id\"))}?action="));
     assert!(!result.contains("{ rc }"));
     assert!(!result.contains("actionScope("));
+  }
+
+  #[test]
+  fn encodes_route_params_in_action_urls() {
+    let source = r#"
+      export default function C(props) {
+        return <button hx-post={() => 1} />;
+      }
+    "#;
+
+    let result = compact(&transform_at("/a/:id/b/:slug", source));
+    assert!(result.contains(
+      "`/a/${encodeURIComponent(props.ctx.req.param(\"id\"))}/b/${encodeURIComponent(props.ctx.req.param(\"slug\"))}?action="
+    ));
+
+    // the separators of a catch-all param are kept, its segments are encoded
+    let result = compact(&transform_at("/files/:rest{.+}", source));
+    assert!(result.contains(
+      "`/files/${props.ctx.req.param(\"rest\").split(\"/\").map(encodeURIComponent).join(\"/\")}?action="
+    ));
   }
 
   #[test]
