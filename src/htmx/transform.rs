@@ -1015,11 +1015,26 @@ impl Visit for LexicalBindingFinder {
   noop_visit_type!();
 
   fn visit_function(&mut self, _: &Function) {}
-  fn visit_getter_prop(&mut self, _: &GetterProp) {}
-  fn visit_setter_prop(&mut self, _: &SetterProp) {}
+
+  // a computed key is evaluated in the enclosing scope, unlike the body
+  fn visit_getter_prop(&mut self, node: &GetterProp) {
+    node.key.visit_with(self);
+  }
+
+  fn visit_setter_prop(&mut self, node: &SetterProp) {
+    node.key.visit_with(self);
+  }
 
   fn visit_class(&mut self, node: &Class) {
     node.super_class.visit_with(self);
+    for member in &node.body {
+      match member {
+        ClassMember::Method(method) => method.key.visit_with(self),
+        ClassMember::ClassProp(prop) => prop.key.visit_with(self),
+        ClassMember::AutoAccessor(accessor) => accessor.key.visit_with(self),
+        _ => {}
+      }
+    }
   }
 
   fn visit_expr(&mut self, node: &Expr) {
@@ -2142,6 +2157,9 @@ mod tests {
               <button hx-on-click={(e) => [1].map(() => console.log(arguments.length, e))} />
               <button hx-on:load={(e = this) => e} />
               <button {...{ "hx-on:click": async () => this.remove() }} />
+              <button hx-on:click={() => class { [this.id] = 1; static [arguments[0]]() {} }} />
+              <button hx-on:click={() => ({ get [this.id]() { return 1; } })} />
+              <button hx-on:click={() => ({ set [arguments[0]](v) {} })} />
             </div>
           );
         }
@@ -2150,7 +2168,7 @@ mod tests {
     .unwrap_err();
 
     let errors = err.lines().collect::<Vec<_>>();
-    assert_eq!(errors.len(), 4, "{}", err);
+    assert_eq!(errors.len(), 8, "{}", err);
     assert_eq!(
       errors[0],
       "src/routes/article/[id]/index.tsx: event handler src/routes/article/[id]/index.tsx@0 is an arrow function that uses `this`, which arrow functions don't bind; use a `function` expression to get the element as `this`, or `event.currentTarget`"
@@ -2158,6 +2176,11 @@ mod tests {
     assert!(errors[1].contains("@1 is an arrow function that uses `arguments`"));
     assert!(errors[2].contains("@2 is an arrow function that uses `this`"));
     assert!(errors[3].contains("@3 is an arrow function that uses `this`"));
+    // computed keys of class members and accessors are evaluated in the enclosing scope
+    assert!(errors[4].contains("@4 is an arrow function that uses `this`"));
+    assert!(errors[5].contains("@4 is an arrow function that uses `arguments`"));
+    assert!(errors[6].contains("@5 is an arrow function that uses `this`"));
+    assert!(errors[7].contains("@6 is an arrow function that uses `arguments`"));
 
     // `function` handlers, and functions, methods and classes nested in arrow handlers, bind their own
     transform_at(
