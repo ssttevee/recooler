@@ -14,11 +14,12 @@ export interface IPluginOptions {
   /**
    * The module that exports the `JSXRouteHandlerFactory` (see `farm-plugin-recooler/helpers`) used
    * to render page components, e.g. one made with `CreateJSXRouteHandlerFactory`. Either a module,
-   * whose default export is used, or a tuple of a module and the name of the export. The module is
-   * imported by the generated entrypoint, so it should be a package name or an absolute path.
-   * Defaults to the `jsxRouteHandler` export of `farm-plugin-recooler/helpers`.
+   * whose default export is used, or a tuple of a module and the name of the export, where a `null`
+   * name also uses the default export. The module is imported by the generated entrypoint, so it
+   * should be a package name or an absolute path. Defaults to the `jsxRouteHandler` export of
+   * `farm-plugin-recooler/helpers`.
    */
-  route_handler_factory?: string | [module: string] | [module: string, name: string];
+  route_handler_factory?: string | [module: string] | [module: string, name: string | null];
 
   /**
    * Secret used to sign the variables captured by form actions. When set, requests with a missing
