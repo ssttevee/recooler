@@ -42,9 +42,7 @@ test("[[catchall]] route matches multiple segments", async () => {
   assert.match(html, /<h1>posts-rest a\/b<\/h1>/);
 });
 
-// TODO: today `[param]` routes are registered before their static siblings, so /posts/new
-// renders posts/[id]. Drop `todo` once the route ordering fix (static > param > catch-all) lands.
-test("static route takes precedence over a [param] sibling", { todo: true }, async () => {
+test("static route takes precedence over a [param] sibling", async () => {
   const { html } = await get("/posts/new");
   assert.match(html, /<h1>posts-new<\/h1>/);
 });
