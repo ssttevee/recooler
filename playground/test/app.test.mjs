@@ -68,6 +68,43 @@ test("group middleware applies to the group's routes only", async () => {
   assert.equal(home.res.headers.get("x-group"), null);
 });
 
+const post = (path, headers = {}) => app.request(path, { method: "POST", headers });
+
+test("a blocking group guard runs when a request falls through to the group's route", async () => {
+  // POST /posts/new has no handler on the public page and falls through to (staff)/posts/[postId]
+  for (const path of ["/posts/new", "/posts/7"]) {
+    const denied = await post(path);
+    assert.equal(denied.status, 401, path);
+    assert.equal(await denied.text(), "staff only");
+
+    const allowed = await post(path, { "x-staff": "yes" });
+    assert.equal(allowed.status, 200, path);
+    assert.equal(await allowed.text(), `staff post ${path.slice("/posts/".length)}`);
+  }
+  // the guard doesn't run for the public pages themselves
+  assert.equal((await get("/posts/7")).res.status, 200);
+});
+
+test("a blocking group guard runs for the same path registered by another group", async () => {
+  assert.equal((await get("/admin")).res.status, 200);
+  assert.equal((await post("/admin")).status, 401);
+  assert.equal(await (await post("/admin", { "x-staff": "yes" })).text(), "staff admin post");
+});
+
+test("a blocking group guard runs when the app is mounted under a prefix", async () => {
+  const { Hono } = await import("hono");
+  const main = new Hono({ strict: true });
+  main.route("/app", app);
+  assert.equal((await main.request("/app/posts/7", { method: "POST" })).status, 401);
+  assert.equal((await main.request("/app/posts/7", { method: "POST", headers: { "x-staff": "yes" } })).status, 200);
+});
+
+test("a blocking group guard runs again when the same request is dispatched again", async () => {
+  const req = new Request("http://localhost/posts/7", { method: "POST" });
+  assert.equal((await app.request(req)).status, 401);
+  assert.equal((await app.request(req)).status, 401);
+});
+
 test("form action returning JSX responds 200 with the rendered html", async () => {
   const { html } = await get("/");
   const [greet] = actionUrls(html);

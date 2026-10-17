@@ -27,6 +27,7 @@ pnpm --filter playground check # node --test against the built hono app
 | --- | --- |
 | static, `[param]` and `[[catchall]]` routes | `src/routes/posts/{new,[id],[[rest]]}` |
 | group middleware | `src/routes/(admin)/middleware.ts` (sets `x-group: admin` on `/admin` only) |
+| a blocking group guard, incl. fall-through from another group's page, the same path in two groups, mounting under a prefix and re-dispatching a request | `src/routes/(staff)/middleware.ts` with `(staff)/posts/[postId]` and `(staff)/admin` (`onPost` only) |
 | layout with a `head` function | `src/routes/layout.tsx` |
 | root component and `head` object (with its own charset, which must not be duplicated) | `src/root.tsx` |
 | route `head` function using params | `src/routes/posts/[id]/index.tsx` |
