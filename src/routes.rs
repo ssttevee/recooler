@@ -1199,6 +1199,17 @@ impl FarmPluginRecooler {
 
     let mut warnings = vec![];
 
+    // only modules in `src_dir` are transformed, so the form actions and event handlers of route
+    // modules outside of it are rendered as their source instead (see the README)
+    if !Path::new(&self.routes_dir).starts_with(&self.src_dir)
+      && (!dir_contents.route_files.is_empty() || !dir_contents.layout_files.is_empty())
+    {
+      warnings.push(format!(
+        "[recooler] routes_dir {:?} is outside of src_dir {:?}, so its route and layout modules are not transformed: form actions and event handlers written in them are rendered as their source; put them in components under src_dir instead",
+        self.routes_dir, self.src_dir
+      ));
+    }
+
     for layout_file in &dir_contents.layout_files {
       let layout_deps = deps_map.get(layout_file).unwrap();
       warnings.extend(ignored_on_load_warning(&layout_deps[0]));

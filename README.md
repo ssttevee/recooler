@@ -313,7 +313,7 @@ Because only declarations are carried over to the client script, there are a few
 - Module level variables are only initialized by their declaration. Assignments in separate statements are left out, so `export let onLoad;` followed by `onLoad = () => { ... };` is `undefined` on the client.
 - `var` declarations nested inside module level blocks (e.g. `if (...) { var x = 1; }`) and module level `using` declarations are left out.
 - `onLoad` must be exported by name from a route module (`index.tsx`), as a function declaration, a variable, or an export specifier such as `export { load as onLoad }`. `export default function onLoad` is not recognized.
-- If `routes_dir` is outside of `src_dir`, route modules are not transformed, so their whole module is bundled into the client script along with `onLoad`.
+- If `routes_dir` is outside of `src_dir`, route and layout modules are not transformed (the build warns about this): form actions and event handlers written directly in them are rendered as their source, so put them in components under `src_dir`. Their `onLoad` still works, and the client script is tree-shaken to what it uses.
 
 ### Root Component
 
