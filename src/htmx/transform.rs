@@ -53,6 +53,8 @@ pub(crate) fn transform_module(
     component: None,
     action_frames: vec![],
     explicit_action_ctx: None,
+    in_component_element: false,
+    keep_object_lit_ctx: false,
     errors: vec![],
     comments,
     synthesized_pos_counter: u32::MAX - 1000000,
@@ -199,6 +201,11 @@ struct ComponentTransformVisitor<'a> {
   component: Option<ComponentFrame>,
   action_frames: Vec<ActionFrame>,
   explicit_action_ctx: Option<Box<Expr>>,
+  /// Whether the innermost JSX element whose attributes are being visited is a component.
+  in_component_element: bool,
+  /// Set right before visiting an object literal spread into the props of a component, whose `ctx`
+  /// prop is then kept like the `ctx` attribute of a component, see `visit_mut_jsx_opening_element`.
+  keep_object_lit_ctx: bool,
 
   errors: Vec<String>,
 
@@ -878,6 +885,11 @@ impl<'a> VisitMut for ComponentTransformVisitor<'a> {
   }
 
   fn visit_mut_jsx_opening_element(&mut self, node: &mut JSXOpeningElement) {
+    let in_component_element = std::mem::replace(
+      &mut self.in_component_element,
+      !is_intrinsic_element(&node.name),
+    );
+
     let has_action = node.attrs.iter().any(|attr| match attr {
       JSXAttrOrSpread::JSXAttr(attr) => jsx_attr_name(attr)
         .and_then(form_action_method)
@@ -907,14 +919,26 @@ impl<'a> VisitMut for ComponentTransformVisitor<'a> {
         let previous_ctx = self.explicit_action_ctx.replace(explicit_ctx);
         node.visit_mut_children_with(self);
         self.explicit_action_ctx = previous_ctx;
+        self.in_component_element = in_component_element;
         return;
       }
+    }
+
+    node.visit_mut_children_with(self);
+    self.in_component_element = in_component_element;
+  }
+
+  fn visit_mut_jsx_attr_or_spread(&mut self, node: &mut JSXAttrOrSpread) {
+    if let JSXAttrOrSpread::SpreadElement(spread) = node {
+      // `{...{ ctx, "hx-post": fn }}` passes `ctx` to a component, like `ctx={...}` does
+      self.keep_object_lit_ctx = self.in_component_element && spread.expr.is_object();
     }
 
     node.visit_mut_children_with(self);
   }
 
   fn visit_mut_object_lit(&mut self, node: &mut ObjectLit) {
+    let keep_ctx = std::mem::take(&mut self.keep_object_lit_ctx);
     let has_action = node.props.iter().any(|prop| match prop {
       PropOrSpread::Prop(prop) => match prop.as_ref() {
         Prop::KeyValue(prop) => prop_name(prop)
@@ -937,7 +961,13 @@ impl<'a> VisitMut for ComponentTransformVisitor<'a> {
       });
 
       if let Some(index) = explicit_ctx_index {
-        let PropOrSpread::Prop(prop) = node.props.remove(index) else {
+        // like the `ctx` attribute, it is kept for a component, which may use the prop itself
+        let prop = if keep_ctx {
+          node.props[index].clone()
+        } else {
+          node.props.remove(index)
+        };
+        let PropOrSpread::Prop(prop) = prop else {
           unreachable!()
         };
         let explicit_ctx = match *prop {
@@ -2382,6 +2412,49 @@ mod tests {
       );
       assert!(!result.contains("props.ctx"), "{}", result);
     }
+  }
+
+  #[test]
+  fn keeps_explicit_action_context_in_object_props_of_components() {
+    let result = compact(&transform(
+      r#"
+        export default function C(props) {
+          const rc = props.rc;
+          return (
+            <>
+              <Btn {...{ "hx-post": () => 1, ctx: rc }} />
+              <Btn {...{ ctx, "hx-post": () => 2 }} />
+              <a {...{ ctx: rc, "hx-post": () => 3 }} />
+              <Btn {...props} {...{ x: { ctx: rc, "hx-post": () => 4 } }} />
+            </>
+          );
+        }
+      "#,
+    ));
+
+    // used for the urls, and still passed to the components
+    assert!(
+      result.contains("<Btn {...{ \"hx-post\": `/article/${encodeURIComponent(rc.req.param(\"id\"))}?action=src%2Froutes%2Farticle%2F%5Bid%5D%2Findex.tsx%400`, ctx: rc }}/>"),
+      "{}",
+      result
+    );
+    assert!(
+      result.contains("<Btn {...{ ctx, \"hx-post\": `/article/${encodeURIComponent(ctx.req.param(\"id\"))}?action="),
+      "{}",
+      result
+    );
+    // but not rendered as an attribute of an html element
+    assert!(
+      result.contains("<a {...{ \"hx-post\": `/article/${encodeURIComponent(rc.req.param(\"id\"))}?action="),
+      "{}",
+      result
+    );
+    // nor kept in an object that isn't itself the spread props
+    assert!(
+      result.contains("x: { \"hx-post\": `/article/${encodeURIComponent(rc.req.param(\"id\"))}?action="),
+      "{}",
+      result
+    );
   }
 
   #[test]
