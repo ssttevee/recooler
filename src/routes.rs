@@ -670,19 +670,20 @@ impl FarmPluginRecooler {
     module_graph: &ModuleGraph,
     source: &String,
   ) -> Result<Vec<Module>> {
+    let source_id = PathBuf::from(source)
+      .relative_to(&traced_graph.root)
+      .unwrap()
+      .to_string();
     let mut modules_queue = VecDeque::<String>::new();
-    modules_queue.push_back(
-      PathBuf::from(source)
-        .relative_to(&traced_graph.root)
-        .unwrap()
-        .to_string(),
-    );
+    modules_queue.push_back(source_id.clone());
 
     let mut deps = Vec::<Module>::new();
     let mut visited = HashSet::<String>::new();
 
     while let Some(module_id) = modules_queue.pop_front() {
-      if !module_id.starts_with(&self.src_dir) {
+      // the scanned module itself is always the first dependency, even when it is outside of
+      // `src_dir`, which is the case for every file in a `routes_dir` outside of `src_dir`
+      if module_id != source_id && !module_id.starts_with(&self.src_dir) {
         continue;
       }
 
@@ -1196,8 +1197,9 @@ pub(crate) mod fixture {
   }
 
   impl Fixture {
-    /// Writes `files` (paths relative to the project dir and their contents) and creates the
-    /// plugin with `options`, in which `src_dir` and `routes_dir` are relative to the project dir.
+    /// Writes `files` (paths relative to the project dir and their contents) and a stand-in for the
+    /// `farm-plugin-recooler` package, and creates the plugin with `options`, in which `src_dir`
+    /// and `routes_dir` are relative to the project dir.
     pub(crate) fn new(files: &[(&str, &str)], options: serde_json::Value) -> Self {
       static COUNTER: AtomicUsize = AtomicUsize::new(0);
       let dir = std::env::temp_dir().join(format!(
@@ -1207,7 +1209,15 @@ pub(crate) mod fixture {
       ));
       let _ = fs::remove_dir_all(&dir);
       fs::create_dir_all(&dir).unwrap();
-      for (path, content) in files {
+      // the transformed modules import the helpers, which the trace compile stubs out
+      let helpers = [
+        (
+          "node_modules/farm-plugin-recooler/package.json",
+          r#"{ "name": "farm-plugin-recooler", "exports": { "./helpers": "./helpers.js" } }"#,
+        ),
+        ("node_modules/farm-plugin-recooler/helpers.js", ""),
+      ];
+      for (path, content) in helpers.iter().chain(files) {
         let path = dir.join(path);
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         fs::write(path, content).unwrap();
@@ -1609,6 +1619,47 @@ mod tests {
       assert!(result.routes.is_empty());
       assert!(result.root_component.is_none());
     }
+  }
+
+  #[test]
+  fn scan_routes_dir_outside_src_dir() {
+    let fixture = Fixture::new(
+      &[
+        (
+          "src/root.tsx",
+          "export default (Page: any) => (props: any) => <html><Page {...props} /></html>;",
+        ),
+        (
+          "src/button.tsx",
+          "export const Button = () => <button hx-on:click={() => alert(1)}>x</button>;",
+        ),
+        (
+          "routes/index.tsx",
+          "import { Button } from '../src/button';\n\
+           export default () => <Button />;\n\
+           export const onLoad = () => {};",
+        ),
+        (
+          "routes/layout.tsx",
+          "export default (Page: any) => (props: any) => <main><Page {...props} /></main>;",
+        ),
+      ],
+      json!({ "src_dir": "src", "routes_dir": "routes" }),
+    );
+    let result = fixture.plugin.scan_routes_(&fixture.context).unwrap();
+
+    let route = result.routes.get("/").unwrap();
+    assert!(route.module_id.to_string().ends_with("/routes/index.tsx"));
+    assert!(route.on_load);
+    let page = route.page_component.as_ref().unwrap();
+    assert_eq!(page.layouts.len(), 1);
+    assert!(page.layouts[0]
+      .module_id
+      .to_string()
+      .ends_with("/routes/layout.tsx"));
+    // the dependencies in `src_dir` of a route outside of it are still scanned
+    assert_eq!(page.handlers.event_handlers.len(), 1);
+    assert!(result.root_component.is_some());
   }
 
   #[test]
