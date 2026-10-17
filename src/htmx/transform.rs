@@ -427,12 +427,15 @@ impl<'a> ComponentTransformVisitor<'a> {
     }
 
     // transform nested actions and event handlers before capturing the action's variables, so
-    // that the variables captured by the nested ones are also captured by this one
+    // that the variables captured by the nested ones are also captured by this one; the explicit
+    // `ctx` of this element is for this action's url only, nested ones use this action's ctx param
+    let explicit_action_ctx = self.explicit_action_ctx.take();
     self
       .action_frames
       .push(new_action_frame(value_node, self.atom_store));
     value_node.visit_mut_children_with(self);
     let frame = self.action_frames.pop().unwrap();
+    self.explicit_action_ctx = explicit_action_ctx;
     if frame.used && frame.add_param {
       add_first_param(value_node, frame.ctx_ident.unwrap());
     }
@@ -1869,6 +1872,25 @@ mod tests {
     assert!(result.contains("_action$post$1 = wrapActionWithPayload(({ a })=>()=>f(a)"));
     assert!(result.contains("({ a })=>(__recooler_ctx)=><i hx-post={`/article/${__recooler_ctx.req.param(\"id\")}?action="));
     assert!(!result.contains("{ a, props }"));
+  }
+
+  #[test]
+  fn nested_actions_do_not_use_outer_explicit_context() {
+    let result = compact(&transform(
+      r#"
+        export default function C(props) {
+          const rc = props.ctx;
+          return <form ctx={rc} hx-post={async (ctx) => <button hx-post={() => 1} />} />;
+        }
+      "#,
+    ));
+
+    // the outer action's url uses `rc`, the inner one the outer action's ctx param, so the outer
+    // action does not capture the hono context
+    assert!(result.contains("<form hx-post={`/article/${rc.req.param(\"id\")}?action="));
+    assert!(result.contains("async (ctx)=><button hx-post={`/article/${ctx.req.param(\"id\")}?action="));
+    assert!(!result.contains("{ rc }"));
+    assert!(!result.contains("actionScope("));
   }
 
   #[test]
