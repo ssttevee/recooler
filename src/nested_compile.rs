@@ -4,7 +4,7 @@
 use std::{collections::HashMap, sync::Arc};
 
 use farmfe_core::{
-  config::Config,
+  config::{custom::CUSTOM_CONFIG_EXTERNAL_RECORD, Config, ModuleFormat, TargetEnv},
   context::CompilationContext,
   error::Result,
   module::{
@@ -38,12 +38,38 @@ pub(crate) fn shared_host_plugins(context: &Arc<CompilationContext>) -> Vec<Arc<
     .collect()
 }
 
+/// Returns the plugins of a client script compile with the config `config`, given the
+/// `host_plugins` shared with it, see [`shared_host_plugins`].
+///
+/// The resolve plugin of the host is replaced by one of its own: it caches the externals of the
+/// host config on first use, which a client script must not have (see
+/// [`force_client_script_output`]), and its resolve cache isn't keyed by the target, so e.g. the
+/// `node` condition of package exports resolved for a node host would be reused.
+pub(crate) fn client_script_plugins(
+  host_plugins: Vec<Arc<dyn Plugin>>,
+  config: &Config,
+) -> Vec<Arc<dyn Plugin>> {
+  let resolve_plugin = farmfe_plugin_resolve::FarmPluginResolve::new(config);
+
+  let mut plugins = host_plugins
+    .into_iter()
+    .filter(|plugin| plugin.name() != resolve_plugin.name())
+    .collect::<Vec<_>>();
+  plugins.push(Arc::new(resolve_plugin));
+  plugins.push(Arc::new(farmfe_plugin_minify::FarmPluginMinify::new(
+    config,
+  )));
+  plugins
+}
+
 /// Returns the inputs of a nested compile with entries named by `input`.
 ///
 /// The `config` hooks of the host plugins are not run for nested compiles (see
 /// [`shared_host_plugins`]), so inputs added by them to the host config must be carried over. That
 /// is the farm runtime entry that `FarmPluginRuntime::config` adds for targets other than
-/// `library`, which the runtime plugin later expects to find in the generated resources.
+/// `library`, which the runtime plugin later expects to find in the generated resources. Client
+/// script compiles always use the `library` target and don't need it, see
+/// [`force_client_script_output`].
 pub(crate) fn nested_compile_input(
   host_config: &Config,
   input: impl IntoIterator<Item = (String, String)>,
@@ -56,6 +82,25 @@ pub(crate) fn nested_compile_input(
     .collect::<HashMap<_, _>>();
   nested_input.extend(input);
   nested_input
+}
+
+/// Forces the output settings of a client script compile, whose config is cloned from the host's.
+///
+/// Client scripts are inlined into a classic `<script>` element, so whatever the host builds (e.g.
+/// a cjs bundle for node), they must be self-contained browser scripts:
+///
+/// - the `library` target, which is an alias of `library-browser`, with esm output. Unlike the
+///   `browser` and `node` targets, it doesn't include the farm runtime (its module system and
+///   resource loader, and for node `global.nodeRequire = require`), and since the client entry
+///   exports nothing, the output has no `export` statements either. The inputs of a client script
+///   compile must therefore not include the runtime entry of the host, see
+///   [`nested_compile_input`].
+/// - no externals: an inline script can't import anything, so every import is bundled.
+pub(crate) fn force_client_script_output(config: &mut Config) {
+  config.output.target_env = TargetEnv::Library;
+  config.output.format = ModuleFormat::EsModule;
+  config.external.clear();
+  config.custom.remove(CUSTOM_CONFIG_EXTERNAL_RECORD);
 }
 
 /// Returns the script generated for the entry named `entry_name` by a nested compile, given its
@@ -340,7 +385,10 @@ mod tests {
   use std::{collections::HashMap, sync::Arc};
 
   use farmfe_core::{
-    config::Config,
+    config::{
+      config_regex::ConfigRegex, custom::CUSTOM_CONFIG_EXTERNAL_RECORD, Config, ModuleFormat,
+      OutputConfig, TargetEnv,
+    },
     error::Result,
     module::ModuleId,
     plugin::Plugin,
@@ -350,7 +398,10 @@ mod tests {
     },
   };
 
-  use super::{entry_script, nested_compile_input, SharedHostPlugin};
+  use super::{
+    client_script_plugins, entry_script, force_client_script_output, nested_compile_input,
+    SharedHostPlugin,
+  };
 
   struct ConfigPlugin;
 
@@ -464,5 +515,72 @@ mod tests {
     assert_eq!(script.name, "client.0123abcd.js");
 
     assert!(entry_script(&entries, &[&other_pot, &client_pot], &resources, "other").is_none());
+  }
+
+  #[test]
+  fn force_client_script_output_builds_a_self_contained_browser_script() {
+    let mut config = Config {
+      output: Box::new(OutputConfig {
+        target_env: TargetEnv::Node,
+        format: ModuleFormat::CommonJs,
+        entry_filename: "[entryName].[hash].cjs".to_string(),
+        ..Default::default()
+      }),
+      external: vec![ConfigRegex::new("^hono")],
+      custom: Box::new(HashMap::from([
+        (
+          CUSTOM_CONFIG_EXTERNAL_RECORD.to_string(),
+          r#"{"jquery":"$"}"#.to_string(),
+        ),
+        ("other".to_string(), "kept".to_string()),
+      ])),
+      ..Default::default()
+    };
+
+    force_client_script_output(&mut config);
+
+    assert_eq!(config.output.target_env, TargetEnv::Library);
+    assert_eq!(config.output.format, ModuleFormat::EsModule);
+    assert!(config.external.is_empty());
+    assert_eq!(
+      *config.custom,
+      HashMap::from([("other".to_string(), "kept".to_string())])
+    );
+    // the script is found by its entry, see `entry_script`
+    assert_eq!(config.output.entry_filename, "[entryName].[hash].cjs");
+  }
+
+  struct NamedPlugin(&'static str);
+
+  impl Plugin for NamedPlugin {
+    fn name(&self) -> &str {
+      self.0
+    }
+  }
+
+  fn plugin_names(plugins: &[Arc<dyn Plugin>]) -> Vec<&str> {
+    plugins.iter().map(|plugin| plugin.name()).collect()
+  }
+
+  #[test]
+  fn client_script_plugins_replace_the_host_resolve_plugin() {
+    let host_resolve: Arc<dyn Plugin> = Arc::new(NamedPlugin("FarmPluginResolve"));
+    let host_plugins: Vec<Arc<dyn Plugin>> = vec![
+      Arc::new(NamedPlugin("FarmPluginScript")),
+      host_resolve.clone(),
+      Arc::new(NamedPlugin("FarmPluginRecooler")),
+    ];
+
+    let plugins = client_script_plugins(host_plugins, &Config::default());
+    let resolve_plugins = plugins
+      .iter()
+      .filter(|plugin| plugin.name() == "FarmPluginResolve")
+      .collect::<Vec<_>>();
+    assert_eq!(resolve_plugins.len(), 1);
+    assert!(!Arc::ptr_eq(resolve_plugins[0], &host_resolve));
+
+    let names = plugin_names(&plugins);
+    assert!(names.contains(&"FarmPluginScript"));
+    assert!(names.contains(&"FarmPluginRecooler"));
   }
 }

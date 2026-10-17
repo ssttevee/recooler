@@ -551,16 +551,14 @@ impl FarmPluginRecooler {
     *config.tree_shaking = BoolOrObj::Bool(true);
     *config.minify = BoolOrObj::Bool(true);
     *config.sourcemap = SourcemapConfig::Bool(false);
-    config.input = nested_compile::nested_compile_input(
-      &context.config,
-      [(
-        String::from(CLIENT_ENTRY_NAME),
-        format!("{}{}", CLIENT_MODULE_PREFIX, module_id.relative_path()),
-      )],
-    );
+    nested_compile::force_client_script_output(&mut config);
+    config.input = HashMap::from([(
+      String::from(CLIENT_ENTRY_NAME),
+      format!("{}{}", CLIENT_MODULE_PREFIX, module_id.relative_path()),
+    )]);
 
-    let mut plugins = nested_compile::shared_host_plugins(context);
-    plugins.push(Arc::new(farmfe_plugin_minify::FarmPluginMinify::new(&config)) as _);
+    let plugins =
+      nested_compile::client_script_plugins(nested_compile::shared_host_plugins(context), &config);
 
     let compiler = Compiler::new_without_internal_plugins(config, plugins)?;
 
