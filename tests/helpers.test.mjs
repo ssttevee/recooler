@@ -43,20 +43,33 @@ describe("actionsMiddleware", () => {
     }
   });
 
-  test("passes actions of a later middleware along", async () => {
-    // the generated app chains the root component's actions before the page's, and an
-    // overlapping route (e.g. a catch-all mounted by a group) may be registered first
+  test("passes actions of a later middleware along, through the later route's group middleware", async () => {
+    // the generated app chains the root component's actions before the page's, and a request
+    // may fall through to a later route (e.g. a catch-all of another group), whose own handler
+    // chain starts with that group's middleware
     const app = new Hono();
-    app.post("/:rest{.+}", actionsMiddleware({ "other@0": (ctx) => ctx.text("other") }));
+    const trace = [];
+    const guard = (name) => async (ctx, next) => {
+      trace.push(name);
+      await next();
+    };
     app.post(
       "/page",
+      groupMiddleware(guard("pub")),
       actionsMiddleware({ "root@0": (ctx) => ctx.text("root") }),
       actionsMiddleware({ "page2@0": (ctx) => ctx.text("page") }),
+    );
+    app.post(
+      "/:rest{.+}",
+      groupMiddleware(guard("adm")),
+      actionsMiddleware({ "other@0": (ctx) => ctx.text("other") }),
     );
 
     assert.equal(await (await post(app, "/page?action=root%400")).text(), "root");
     assert.equal(await (await post(app, "/page?action=page2%400")).text(), "page");
+    assert.deepEqual(trace.splice(0), ["pub", "pub"]);
     assert.equal(await (await post(app, "/page?action=other%400")).text(), "other");
+    assert.deepEqual(trace.splice(0), ["pub", "adm"]);
     assert.equal((await post(app, "/page?action=nope")).status, 404);
   });
 
@@ -176,35 +189,61 @@ async function getText(app, path = "/") {
 }
 
 describe("groupMiddleware", () => {
+  const trace = [];
+  const mw = (name) => async (ctx, next) => {
+    trace.push(name);
+    await next();
+  };
+  const text = (body) => (ctx) => ctx.text(body);
+  const fallThrough = async (ctx, next) => {
+    await next();
+  };
+
   function app() {
-    const trace = [];
-    const mw = (name) => async (ctx, next) => {
-      trace.push(name);
-      await next();
-    };
+    trace.length = 0;
+    // one middleware function per group, wrapped once per registration like the generated app
+    const pub = mw("public");
+    const admin = mw("admin");
     const app = new Hono({ strict: true });
     app.use("*", mw("root"));
-    app.use("*", groupMiddleware(["/docs/:slug", "/:rest{.+}"], mw("group")));
-    app.use("/docs/*", mw("docs"));
-    app.get("/docs/new", (ctx) => ctx.text("new"));
-    app.get("/docs/:slug", (ctx) => ctx.text("slug"));
-    app.get("/plain", (ctx) => ctx.text("plain"));
-    app.get("/:rest{.+}", (ctx) => ctx.text("rest"));
-    return { app, trace };
+    // (admin)/posts/[id] with onPost, (public)/posts/new as a page, like the generated app
+    app
+      .all("/posts/new", groupMiddleware(pub), fallThrough)
+      .get(groupMiddleware(pub), text("new"));
+    app
+      .all("/posts/:id", groupMiddleware(admin), fallThrough)
+      .post(groupMiddleware(admin), text("admin post"));
+    app.get("/:rest{.+}", groupMiddleware(pub), text("rest"));
+    // middleware of a directory inside a group, for the requests no route handles
+    app.use("/posts/*", groupMiddleware(mw("public-posts")));
+    return app;
   }
 
-  test("runs only for requests handled by the group's routes, before deeper middleware", async () => {
-    for (const [path, body, expected] of [
-      ["/docs/x", "slug", ["root", "group", "docs"]],
-      ["/docs/new", "new", ["root", "docs"]],
-      ["/plain", "plain", ["root"]],
-      ["/a/b", "rest", ["root", "group"]],
-    ]) {
-      const { app: a, trace } = app();
-      const res = await a.request(path);
-      assert.equal(await res.text(), body);
-      assert.deepEqual(trace, expected, path);
-    }
+  test("runs once per request across a route's registrations", async () => {
+    const res = await app().request("/posts/new");
+    assert.equal(await res.text(), "new");
+    assert.deepEqual(trace, ["root", "public"]);
+  });
+
+  test("runs the middleware of the route that handles a fall-through", async () => {
+    // a POST to the public page has no handler there and falls through to the admin route
+    const res = await app().request("/posts/new", { method: "POST" });
+    assert.equal(await res.text(), "admin post");
+    assert.deepEqual(trace, ["root", "public", "admin"]);
+  });
+
+  test("works when the app is mounted under a prefix", async () => {
+    const main = new Hono({ strict: true });
+    main.route("/app", app());
+    const res = await main.request("/app/posts/7", { method: "POST" });
+    assert.equal(await res.text(), "admin post");
+    assert.deepEqual(trace, ["root", "admin"]);
+  });
+
+  test("runs the middleware of a directory inside a group for unhandled requests", async () => {
+    const res = await app().request("/posts/7/nope", { method: "DELETE" });
+    assert.equal(res.status, 404);
+    assert.deepEqual(trace, ["root", "public-posts"]);
   });
 });
 

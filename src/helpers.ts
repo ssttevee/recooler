@@ -515,24 +515,30 @@ export function actionsMiddleware(
   };
 }
 
+const ranMiddleware = new WeakMap<Request, Set<MiddlewareHandler>>();
+
 /**
- * Restricts the middleware of a route group to the requests that are handled by one of the
- * group's routes, given as hono paths.
+ * Runs `middleware` at most once per request.
  *
- * The route that handles a request is taken to be the first matched handler that isn't a `use`
- * middleware (whose paths end with `*`), so a route that falls through to a later route with
- * `next()` still counts as the handling route.
+ * The generated app runs the middleware of a route group as the first handlers of each of the
+ * group's routes' registrations, so that it runs exactly when one of the group's handlers does,
+ * whatever route matched the request first and however the app is mounted. A request may go
+ * through several registrations of the same route (e.g. its form actions, then its `onPost`), so
+ * each middleware is only run the first time.
  */
-export function groupMiddleware(
-  routes: string[],
-  middleware: MiddlewareHandler,
-): MiddlewareHandler {
-  const paths = new Set(routes);
+export function groupMiddleware(middleware: MiddlewareHandler): MiddlewareHandler {
   return (ctx, next) => {
-    const route = ctx.req.matchedRoutes.find((r) => !r.path.endsWith("*"));
-    return route !== undefined && paths.has(route.path)
-      ? middleware(ctx, next)
-      : next();
+    let ran = ranMiddleware.get(ctx.req.raw);
+    if (ran === undefined) {
+      ran = new Set();
+      ranMiddleware.set(ctx.req.raw, ran);
+    }
+    if (ran.has(middleware)) {
+      return next();
+    }
+
+    ran.add(middleware);
+    return middleware(ctx, next);
   };
 }
 
