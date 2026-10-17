@@ -164,7 +164,7 @@ Middleware files placed directly in a group directory (i.e. a parenthesized dire
 
 ### Form Actions
 
-Any `hx-{method}` attributes with function values will be converted to a form action. This works for all components within the configured source directory (which is `src` by default), including layouts and the root component. The function may optionally be async and return a JSX element or a hono response.
+Any `hx-{method}` attributes with function values will be converted to a form action. This works for all components within the configured source directory (which is `src` by default), including layouts and the root component. The function may optionally be async and return a hono response, or anything that can be rendered as JSX children (elements, strings, numbers, arrays and promises of them), which is sent as html. Returning `undefined` or `null` sends an empty `204 No Content` response, while `false` and `""` render nothing and send an empty `200` response, just like `{false}` in JSX. A `Response` thrown by the action or by a component it renders is sent as is.
 
 This is a little similar to next.js's `"use server"` functions, but specifically for htmx.
 
@@ -173,8 +173,13 @@ declare interface FormActionFn<TPayload = any, TContext = HonoContext> {
   (
     ctx: TContext,
     payload: TPayload,
-  ): import("hono/types").HandlerResponse<any> | JSX.Element;
+  ): Promise<FormActionResult> | FormActionResult;
 }
+
+type FormActionResult =
+  | Awaited<import("hono/types").HandlerResponse<any>>
+  | Exclude<import("easy-jsx-html-engine").Children, PromiseLike<any>>
+  | void;
 ```
 
 Examples:

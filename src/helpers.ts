@@ -1,5 +1,6 @@
 import {
   ErrorBoundary as _ErrorBoundary,
+  type Children,
   type Component,
   createElement,
   dangerouslyPreventEscaping,
@@ -448,14 +449,26 @@ export function actionsMiddleware(
     }
 
     if (actionId !== undefined && Object.hasOwn(actions, actionId)) {
-      const result = await actions[actionId](ctx, next);
-      if (result === undefined || result === null) {
-        return ctx.newResponse(null, 204);
+      try {
+        const result: unknown = await actions[actionId](ctx, next);
+        if (result instanceof Response) {
+          return result;
+        }
+        if (result === undefined || result === null) {
+          return ctx.newResponse(null, 204);
+        }
+
+        // anything else is rendered like jsx children, so strings are escaped, arrays and nested
+        // promises are resolved, and `false` or `""` render nothing
+        const element = await createElement(Fragment, {}, result as Children);
+        return ctx.html(element.toHTML());
+      } catch (err) {
+        if (err instanceof Response) {
+          return err;
+        }
+
+        throw err;
       }
-      if (typeof result === "object" && "toHTML" in result) {
-        return ctx.html(result.toHTML());
-      }
-      return result;
     }
 
     await next();
