@@ -51,6 +51,11 @@ jobs:
       - name: Node tests
         run: pnpm run test
 
+      # type checks the playground against global.d.ts and the helpers' declarations emitted by
+      # the tsc in `pnpm run test`; the root tsconfig excludes the playground
+      - name: Type check playground
+        run: pnpm exec tsc -p playground
+
   call-rust-build:
     uses: ./.github/workflows/build.yaml
 
