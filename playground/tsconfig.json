@@ -1,0 +1,13 @@
+{
+  "compilerOptions": {
+    "strict": true,
+    "noEmit": true,
+    "target": "esnext",
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "jsx": "react-jsx",
+    "jsxImportSource": "easy-jsx-html-engine",
+    "skipLibCheck": true
+  },
+  "include": ["src", "farm.config.ts", "../global.d.ts"]
+}

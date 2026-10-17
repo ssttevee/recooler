@@ -1,0 +1,19 @@
+{
+  "name": "playground",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "farm build",
+    "check": "node --test test/app.test.mjs"
+  },
+  "dependencies": {
+    "easy-jsx-html-engine": "^0.1.10",
+    "farm-plugin-recooler": "workspace:*",
+    "hono": "^4.12.34"
+  },
+  "devDependencies": {
+    "@farmfe/cli": "^1.0.5",
+    "@farmfe/core": "^1.7.11",
+    "@farmfe/plugin-react": "^1.2.6"
+  }
+}

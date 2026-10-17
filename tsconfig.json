@@ -11,6 +11,6 @@
     "skipLibCheck": true,
     "types": ["node", "easy-jsx-html-engine/jsx-runtime"]
   },
-  "exclude": ["node_modules"],
+  "exclude": ["node_modules", "playground"],
   "include": ["**/*.ts", "global.d.ts"]
 }
