@@ -58,6 +58,9 @@ const LAZY_COMPILATION_PLUGIN_NAME: &str = "FarmPluginLazyCompilation";
 /// added if the host doesn't have it. Otherwise every module that a handler imports would be
 /// bundled whole, along with everything that its unused exports import, and those modules would
 /// also count towards `client_banned_imports`.
+///
+/// The same goes for the minify plugin, which is added if the host doesn't minify. The host's own
+/// instance is kept if it has one, since a second one would minify every script twice.
 pub(crate) fn client_script_plugins(
   host_plugins: Vec<Arc<dyn Plugin>>,
   config: &Config,
@@ -79,9 +82,15 @@ pub(crate) fn client_script_plugins(
   {
     plugins.push(Arc::new(tree_shake_plugin));
   }
-  plugins.push(Arc::new(farmfe_plugin_minify::FarmPluginMinify::new(
-    config,
-  )));
+
+  let minify_plugin = farmfe_plugin_minify::FarmPluginMinify::new(config);
+  if !plugins
+    .iter()
+    .any(|plugin| plugin.name() == minify_plugin.name())
+  {
+    plugins.push(Arc::new(minify_plugin));
+  }
+
   plugins
 }
 
@@ -643,5 +652,30 @@ mod tests {
       .collect::<Vec<_>>();
     assert_eq!(tree_shake_plugins.len(), 1);
     assert!(Arc::ptr_eq(tree_shake_plugins[0], &host_tree_shake));
+  }
+
+  #[test]
+  fn client_script_plugins_add_minify_once() {
+    let plugins = client_script_plugins(
+      vec![Arc::new(NamedPlugin("FarmPluginScript"))],
+      &Config::default(),
+    );
+    assert_eq!(
+      plugin_names(&plugins)
+        .iter()
+        .filter(|name| **name == "FarmPluginMinify")
+        .count(),
+      1
+    );
+
+    // the host minifies
+    let host_minify: Arc<dyn Plugin> = Arc::new(NamedPlugin("FarmPluginMinify"));
+    let plugins = client_script_plugins(vec![host_minify.clone()], &Config::default());
+    let minify_plugins = plugins
+      .iter()
+      .filter(|plugin| plugin.name() == "FarmPluginMinify")
+      .collect::<Vec<_>>();
+    assert_eq!(minify_plugins.len(), 1);
+    assert!(Arc::ptr_eq(minify_plugins[0], &host_minify));
   }
 }
