@@ -720,12 +720,9 @@ impl FarmPluginRecooler {
           methods.into_iter().copied().collect(),
         )
       } else {
-        // generate a identity component; this is a workaround for the case where there is no root component
-        after_imports += r#"
-        function RootHOC(Component) {
-          return Component
-        }
-        "#;
+        // renders the page in a basic html document with the head elements and the client script
+        after_imports +=
+          "import { DefaultRootHOC as RootHOC } from \"farm-plugin-recooler/helpers\";\n";
 
         ("RootHOC".to_string(), Default::default())
       }

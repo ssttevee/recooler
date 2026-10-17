@@ -487,12 +487,24 @@ export function DefaultRootHOC(
       createElement(
         "html",
         {},
-        createElement("head", {}, renderHeadElements(props.head)),
+        createElement(
+          "head",
+          {},
+          createElement("meta", { charset: "utf-8" }),
+          renderHeadElements(props.head),
+        ),
         createElement(
           "body",
           {},
           createElement(Content, props),
-          clientScript && createElement("script", {}, clientScript),
+          // text children are escaped, which would break the script, and the function scope
+          // keeps its top level declarations out of the global scope
+          clientScript &&
+            createElement(
+              "script",
+              {},
+              dangerouslyPreventEscaping(`(()=>{${clientScript}})()`),
+            ),
         ),
       ),
     );
