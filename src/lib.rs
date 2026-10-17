@@ -54,8 +54,45 @@ pub struct RecoolerOptions {
 
 struct ModuleSymbol {
   module: String,
-  default: bool,
+  /// the imported export, the default export when `None`
+  export: Option<String>,
+  /// the local identifier of the import in the generated entrypoint
   name: String,
+}
+
+impl ModuleSymbol {
+  fn route_handler_factory(input: Option<RouteHandlerFactoryInput>) -> Self {
+    let (module, export) = match input {
+      None => (
+        "farm-plugin-recooler/helpers".to_string(),
+        Some(DEFAULT_ROUTE_HANDLER_IDENT.to_string()),
+      ),
+      Some(RouteHandlerFactoryInput::String(module))
+      | Some(RouteHandlerFactoryInput::Tuple1((module,))) => (module, None),
+      // a null name imports the default export, like when it is omitted
+      Some(RouteHandlerFactoryInput::Tuple2((module, export))) => (module, export),
+    };
+
+    Self {
+      module,
+      export,
+      // the export is aliased so that its name can't collide with the other identifiers of the
+      // generated entrypoint, which are either fixed (`app`, `Hono`, `buildHeadFn`, ...) or
+      // contain an underscore (see `UniqueImportIdentifiers`)
+      name: ROUTE_HANDLER_FACTORY_IDENT.to_string(),
+    }
+  }
+
+  fn import_statement(&self) -> String {
+    format!(
+      "import {} from {};",
+      match &self.export {
+        Some(export) => format!("{{ {} as {} }}", export, self.name),
+        None => self.name.clone(),
+      },
+      serde_json::to_string(&self.module).unwrap()
+    )
+  }
 }
 
 #[farm_plugin]
@@ -79,6 +116,7 @@ pub struct FarmPluginRecooler {
 }
 
 static DEFAULT_ROUTE_HANDLER_IDENT: &str = "jsxRouteHandler";
+static ROUTE_HANDLER_FACTORY_IDENT: &str = "routeHandlerFactory";
 
 impl FarmPluginRecooler {
   fn new(_config: &Config, options_str: String) -> Self {
@@ -131,31 +169,7 @@ impl FarmPluginRecooler {
       client_banned_imports,
       option_errors,
       client_script_cache: Default::default(),
-      route_handler_factory: options.route_handler_factory.map_or_else(
-        || ModuleSymbol {
-          module: "farm-plugin-recooler/helpers".to_string(),
-          default: false,
-          name: DEFAULT_ROUTE_HANDLER_IDENT.to_string(),
-        },
-        |input| match input {
-          RouteHandlerFactoryInput::String(module) => ModuleSymbol {
-            module: module,
-            default: true,
-            name: DEFAULT_ROUTE_HANDLER_IDENT.to_string(),
-          },
-          RouteHandlerFactoryInput::Tuple1((module,)) => ModuleSymbol {
-            module: module,
-            default: true,
-            name: DEFAULT_ROUTE_HANDLER_IDENT.to_string(),
-          },
-          // a null name imports the default export, like when it is omitted
-          RouteHandlerFactoryInput::Tuple2((module, name)) => ModuleSymbol {
-            module: module,
-            default: name.is_none(),
-            name: name.unwrap_or_else(|| DEFAULT_ROUTE_HANDLER_IDENT.to_string()),
-          },
-        },
-      ),
+      route_handler_factory: ModuleSymbol::route_handler_factory(options.route_handler_factory),
     }
   }
 }
@@ -743,7 +757,7 @@ impl FarmPluginRecooler {
         r#"
         import {{ Hono }} from "hono";
         import {{ actionsMiddleware, buildHeadFn, configureActions, makeCloudflarePagesHandler }} from "farm-plugin-recooler/helpers";
-        import {} from {};
+        {}
         {}
 
         {}
@@ -757,12 +771,7 @@ impl FarmPluginRecooler {
         export default app;
         export const onRequest = /* #__PURE__ */ makeCloudflarePagesHandler(app);
         "#,
-        if self.route_handler_factory.default {
-            self.route_handler_factory.name.clone()
-        } else {
-            format!("{{ {} }}", self.route_handler_factory.name)
-        },
-        serde_json::to_string(&self.route_handler_factory.module).unwrap(),
+        self.route_handler_factory.import_statement(),
         import_idents.imports_str(),
         after_imports,
         handlers,
@@ -774,7 +783,44 @@ impl FarmPluginRecooler {
 
 #[cfg(test)]
 mod tests {
-  use super::strip_path_route_groups;
+  use super::{strip_path_route_groups, ModuleSymbol, RouteHandlerFactoryInput};
+
+  fn route_handler_factory_import(input: Option<RouteHandlerFactoryInput>) -> String {
+    let symbol = ModuleSymbol::route_handler_factory(input);
+    assert_eq!(symbol.name, "routeHandlerFactory");
+    symbol.import_statement()
+  }
+
+  #[test]
+  fn route_handler_factory_is_imported_under_an_alias() {
+    assert_eq!(
+      route_handler_factory_import(None),
+      r#"import { jsxRouteHandler as routeHandlerFactory } from "farm-plugin-recooler/helpers";"#
+    );
+    // names of the generated entrypoint's own identifiers
+    for export in ["app", "Hono", "buildHeadFn", "actionsMiddleware", "RootHOC"] {
+      assert_eq!(
+        route_handler_factory_import(Some(RouteHandlerFactoryInput::Tuple2((
+          "./x".to_string(),
+          Some(export.to_string())
+        )))),
+        format!(
+          r#"import {{ {} as routeHandlerFactory }} from "./x";"#,
+          export
+        )
+      );
+    }
+    for input in [
+      RouteHandlerFactoryInput::String("./x".to_string()),
+      RouteHandlerFactoryInput::Tuple1(("./x".to_string(),)),
+      RouteHandlerFactoryInput::Tuple2(("./x".to_string(), None)),
+    ] {
+      assert_eq!(
+        route_handler_factory_import(Some(input)),
+        r#"import routeHandlerFactory from "./x";"#
+      );
+    }
+  }
 
   #[test]
   fn strips_every_group_that_route_registration_treats_as_a_group() {
