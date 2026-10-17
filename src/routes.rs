@@ -1004,6 +1004,52 @@ pub(crate) fn is_route_file(routes_dir: &str, file_path: &Path) -> bool {
 
 /// Returns an error naming the files if a directory contains more than one of `files`, e.g. both a
 /// `layout.tsx` and a `layout.jsx`, which would be used for the same path.
+/// Returns a hono path with the names of its params removed, e.g. `/:id/x` and `/:slug/x` both
+/// give `/:/x`: hono registers both, but only the first ever matches.
+fn route_path_shape(hono_path: &str) -> String {
+  hono_path
+    .split('/')
+    .map(|segment| {
+      if let Some(param) = segment.strip_prefix(':') {
+        // keep a `{pattern}`, which decides what the param matches
+        format!(":{}", &param[param.find('{').unwrap_or(param.len())..])
+      } else {
+        segment.to_string()
+      }
+    })
+    .collect::<Vec<_>>()
+    .join("/")
+}
+
+/// Fails for routes whose hono paths differ only in the names of their params, e.g. the sibling
+/// directories `[id]` and `[slug]`, since the later one could never be matched.
+fn ensure_distinct_route_shapes(result: &ScanResult) -> Result<()> {
+  let mut routes = result
+    .routes
+    .iter()
+    .map(|(path, route)| (route_path_without_groups(path), route))
+    .collect::<Vec<_>>();
+  routes.sort_by(|a, b| a.0.cmp(&b.0));
+  routes.dedup_by(|a, b| a.0 == b.0);
+
+  let mut shapes = HashMap::<String, (&String, &RouteInfo)>::new();
+  for (hono_path, route) in &routes {
+    if let Some((other_path, other)) =
+      shapes.insert(route_path_shape(hono_path), (hono_path, route))
+    {
+      return Err(CompilationError::GenericError(format!(
+        "routes {} ({}) and {} ({}) differ only in the names of their params, so only one of them can ever match; rename or merge them",
+        other_path,
+        other.module_id.relative_path(),
+        hono_path,
+        route.module_id.relative_path()
+      )));
+    }
+  }
+
+  Ok(())
+}
+
 fn ensure_one_file_per_dir(kind: &str, files: &[PathBuf]) -> Result<()> {
   let mut files_by_dir = HashMap::<&Path, Vec<String>>::new();
   for file in files {
@@ -1239,6 +1285,17 @@ impl FarmPluginRecooler {
     }
 
     for middleware_file in &dir_contents.middleware_files {
+      // a middleware module without a default export has nothing to register, and the generated
+      // import would make the whole app fail to load
+      if read_source_value_exports(middleware_file)
+        .is_some_and(|exports| !exports.contains("default"))
+      {
+        return Err(CompilationError::GenericError(format!(
+          "middleware {} has no default export",
+          middleware_file.to_str().unwrap()
+        )));
+      }
+
       result.add_middleware(
         file_to_route_path(&self.routes_dir, middleware_file),
         &ModuleId::from(middleware_file.to_str().unwrap()),
@@ -1253,6 +1310,8 @@ impl FarmPluginRecooler {
         deps_map.get(route_file).unwrap(),
       )?;
     }
+
+    ensure_distinct_route_shapes(&result)?;
 
     let root_file = PathBuf::from(&self.src_dir).join("root.tsx");
     if let Some(root_file) = &dir_contents.root_file {
@@ -1404,7 +1463,7 @@ mod tests {
   use super::{
     compare_route_paths, ensure_one_file_per_dir, file_to_route_path, fixture::Fixture,
     ignored_on_load_warning, is_trace_stubbed, layout_wraps_route, prefetch_parse_syntax,
-    PageComponentInfo, RootComponentInfo, RouteInfo, RoutePlan, ScanResult,
+    route_path_shape, PageComponentInfo, RootComponentInfo, RouteInfo, RoutePlan, ScanResult,
   };
   use crate::{htmx::FormActionMethod, ids::ComponentHandlerIds};
 
@@ -1734,6 +1793,54 @@ mod tests {
       planned_route_middleware(&plan),
       [("/admin/sub/page".to_string(), vec![])]
     );
+  }
+
+  #[test]
+  fn route_path_shapes() {
+    assert_eq!(route_path_shape("/:id/x"), "/:/x");
+    assert_eq!(route_path_shape("/:slug/x"), "/:/x");
+    assert_eq!(route_path_shape("/a/:rest{.+}"), "/a/:{.+}");
+    assert_eq!(route_path_shape("/a/:n{\\d+}"), "/a/:{\\d+}");
+    assert_eq!(route_path_shape("/a/b"), "/a/b");
+  }
+
+  #[test]
+  fn scan_rejects_routes_that_differ_only_in_param_names() {
+    let message = scan_error(&[
+      ("src/routes/[id]/index.tsx", PAGE),
+      ("src/routes/[slug]/index.tsx", PAGE),
+    ]);
+    assert!(
+      message.contains("differ only in the names of their params"),
+      "{}",
+      message
+    );
+    assert!(message.contains("/:id"), "{}", message);
+    assert!(message.contains("/:slug"), "{}", message);
+
+    // the same hono path in two groups is allowed, and a pattern tells params apart
+    let fixture = Fixture::new(
+      &[
+        ("src/routes/(a)/[id]/index.tsx", PAGE),
+        ("src/routes/(b)/[id]/index.tsx", PAGE),
+        ("src/routes/[n{\\d+}]/index.tsx", PAGE),
+      ],
+      json!({ "src_dir": "src" }),
+    );
+    fixture.plugin.scan_routes_(&fixture.context).unwrap();
+  }
+
+  #[test]
+  fn scan_rejects_middleware_without_a_default_export() {
+    let message = scan_error(&[
+      ("src/routes/index.tsx", PAGE),
+      (
+        "src/routes/middleware.ts",
+        "export const mw = async (c: any, next: any) => { await next(); };",
+      ),
+    ]);
+    assert!(message.contains("middleware"), "{}", message);
+    assert!(message.contains("has no default export"), "{}", message);
   }
 
   #[test]
