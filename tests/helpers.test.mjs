@@ -59,6 +59,26 @@ describe("actionsMiddleware", () => {
     assert.equal(await (await post(app, "/page?action=other%400")).text(), "other");
     assert.equal((await post(app, "/page?action=nope")).status, 404);
   });
+
+  test("uses the first of repeated action params", async () => {
+    assert.equal((await post(actionsApp(), "/page?action=page%400&action=bogus")).status, 200);
+    assert.equal((await post(actionsApp(), "/page?action=bogus&action=page%400")).status, 404);
+  });
+
+  test("only rejects unknown actions on routes with actions of the method", async () => {
+    // the root component's GET actions are mounted on every page, so a page's own `action`
+    // query param is taken for a form action there, but not on a route without GET actions
+    const app = new Hono();
+    app.get("/with", actionsMiddleware({ "root-get@0": (ctx) => ctx.text("root") }));
+    app.get("/with", (ctx) => ctx.text(`page ${ctx.req.query("action")}`));
+    app.get("/without", (ctx) => ctx.text(`page ${ctx.req.query("action")}`));
+    app.post("/without", (ctx) => ctx.text(`onPost ${ctx.req.query("action")}`));
+
+    assert.equal((await app.request("/with?action=edit")).status, 404);
+    assert.equal(await (await app.request("/with")).text(), "page undefined");
+    assert.equal(await (await app.request("/without?action=edit")).text(), "page edit");
+    assert.equal(await (await post(app, "/without?action=edit")).text(), "onPost edit");
+  });
 });
 
 describe("actionsMiddleware results", () => {
@@ -217,5 +237,36 @@ describe("buildHeadFn", () => {
     assert.notEqual(first.metas, head.metas);
     // element props are not cloned
     assert.equal(first.metas[0], head.metas[0]);
+  });
+
+  test("does not let head functions mutate a head object only known at runtime", async () => {
+    // e.g. a layout's `export const head = makeHead()`, passed in the list of head functions
+    const layoutHead = { title: "layout", metas: [{ name: "a", content: "a" }] };
+    const snapshot = structuredClone(layoutHead);
+    const headFn = buildHeadFn([
+      (_ctx, prev) => ({ ...prev, title: "root" }),
+      layoutHead,
+      (_ctx, prev) => {
+        prev.title += "!";
+        prev.metas.push({ name: "b", content: "b" });
+        return prev;
+      },
+    ]);
+
+    for (let i = 0; i < 2; i++) {
+      const head = await headFn({});
+      assert.equal(head.title, "layout!");
+      assert.deepEqual(head.metas, [...snapshot.metas, { name: "b", content: "b" }]);
+    }
+    assert.deepEqual(layoutHead, snapshot);
+  });
+
+  test("skips missing entries and resets to an empty head when a function returns nothing", async () => {
+    const headFn = buildHeadFn(
+      [null, undefined, (_ctx, prev) => ({ ...prev, title: "kept" }), undefined],
+      { title: "initial" },
+    );
+    assert.deepEqual(await headFn({}), { title: "kept" });
+    assert.deepEqual(await buildHeadFn([() => undefined], { title: "initial" })({}), {});
   });
 });
