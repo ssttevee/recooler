@@ -70,8 +70,27 @@ test("group middleware applies to the group's routes only", async () => {
 
 const post = (path, headers = {}) => app.request(path, { method: "POST", headers });
 
+test("a page's form actions run before a same-shaped route of another group", async () => {
+  // /posts/[id] (page) and (staff)/posts/[postId] (onPost) match the same requests: the page's
+  // action registrations go first, and a POST without a matching action passes along
+  const { html } = await get("/posts/7");
+  const [like] = actionUrls(html);
+  assert.ok(like, "the like button has an hx-post action url");
+  const res = await app.request(like, { method: "POST", body: new FormData() });
+  assert.equal(res.status, 200);
+  assert.match(await res.text(), /<p id="liked">liked<\/p>/);
+});
+
 test("a blocking group guard runs when a request falls through to the group's route", async () => {
-  // POST /posts/new has no handler on the public page and falls through to (staff)/posts/[postId]
+  // the public /posts/new page registers its form action for POST, which passes a POST without
+  // a matching action along to (staff)/posts/[postId]; /posts/7 is a page too
+  const { html } = await get("/posts/new");
+  const [draft] = actionUrls(html);
+  assert.ok(draft, "the draft form has an hx-post action url");
+  const drafted = await app.request(draft, { method: "POST", body: new FormData() });
+  assert.equal(drafted.status, 200);
+  assert.match(await drafted.text(), /<p id="drafted">drafted<\/p>/);
+
   for (const path of ["/posts/new", "/posts/7"]) {
     const denied = await post(path);
     assert.equal(denied.status, 401, path);
