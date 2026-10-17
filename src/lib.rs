@@ -70,6 +70,9 @@ pub struct FarmPluginRecooler {
   action_secret: Option<String>,
   /// patterns for modules that must not be included in client scripts
   client_banned_imports: Vec<Regex>,
+  /// errors in the plugin options, reported by the `config` hook since the plugin can't fail to
+  /// be created: a panic while it is being created aborts the host process
+  option_errors: Vec<String>,
   /// compiled client scripts keyed by their generated entry source, so that
   /// routes with identical client entries are only compiled once per build
   client_script_cache: Mutex<HashMap<String, String>>,
@@ -80,6 +83,18 @@ static DEFAULT_ROUTE_HANDLER_IDENT: &str = "jsxRouteHandler";
 impl FarmPluginRecooler {
   fn new(_config: &Config, options_str: String) -> Self {
     let options: RecoolerOptions = serde_json::from_str(&options_str).unwrap();
+
+    let mut option_errors = vec![];
+    let mut client_banned_imports = vec![];
+    for pattern in options.client_banned_imports.unwrap_or_default() {
+      match Regex::new(&pattern) {
+        Ok(regex) => client_banned_imports.push(regex),
+        Err(e) => option_errors.push(format!(
+          "invalid client_banned_imports pattern {:?}: {}",
+          pattern, e
+        )),
+      }
+    }
 
     let cwd = std::env::current_dir().unwrap();
     let src_dir = fs::canonicalize(options.src_dir.unwrap_or("src".to_string()))
@@ -104,16 +119,8 @@ impl FarmPluginRecooler {
       scanned_routes: Default::default(),
       scanned_dir: Default::default(),
       action_secret: options.action_secret.filter(|secret| !secret.is_empty()),
-      client_banned_imports: options
-        .client_banned_imports
-        .unwrap_or_default()
-        .iter()
-        .map(|pattern| {
-          Regex::new(pattern).unwrap_or_else(|e| {
-            panic!("invalid client_banned_imports pattern {:?}: {}", pattern, e)
-          })
-        })
-        .collect(),
+      client_banned_imports,
+      option_errors,
       client_script_cache: Default::default(),
       route_handler_factory: options.route_handler_factory.map_or_else(
         || ModuleSymbol {
@@ -159,6 +166,13 @@ impl Plugin for FarmPluginRecooler {
   }
 
   fn config(&self, config: &mut Config) -> Result<Option<()>> {
+    if !self.option_errors.is_empty() {
+      return Err(CompilationError::GenericError(format!(
+        "invalid farm-plugin-recooler options:\n{}",
+        self.option_errors.join("\n")
+      )));
+    }
+
     if config.input.len() == 0 {
       config
         .input
