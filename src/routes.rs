@@ -446,6 +446,24 @@ impl ScanResult {
     }
   }
 
+  /// Sets the root component, which wraps every page, so like those of the layouts of a page (see
+  /// [`Self::add_route`]), its event handlers are added to those of every page, which decide what
+  /// the client script of the page includes. Its form actions are not, since they are handled by
+  /// the middleware of the root for every path instead, see
+  /// `FarmPluginRecooler::generate_entrypoint_impl_module`.
+  fn set_root_component(&mut self, root: RootComponentInfo) {
+    for route in self.routes.values_mut() {
+      if let Some(page) = &mut route.page_component {
+        page
+          .handlers
+          .event_handlers
+          .extend(root.handlers.event_handlers.iter().cloned());
+      }
+    }
+
+    self.root_component = Some(root);
+  }
+
   fn add_route(
     &mut self,
     path: String,
@@ -1186,7 +1204,7 @@ impl FarmPluginRecooler {
       let root_module_id = root_deps[0].id.clone();
       warnings.extend(ignored_on_load_warning(&root_deps[0]));
 
-      result.root_component = Some(RootComponentInfo {
+      result.set_root_component(RootComponentInfo {
         head: find_head_export_type(&root_deps[0].meta.as_script().ast),
         module_id: root_module_id,
         handlers: {
@@ -1319,15 +1337,19 @@ mod tests {
     swc_ecma_parser::{Syntax, TsSyntax},
   };
   use farmfe_toolkit::script::parse_module;
-  use std::{cmp::Ordering, collections::HashSet};
+  use std::{
+    cmp::Ordering,
+    collections::{HashMap, HashSet},
+  };
 
   use std::path::{Path, PathBuf};
 
   use super::{
     compare_route_paths, ensure_one_file_per_dir, file_to_route_path, fixture::Fixture,
     ignored_on_load_warning, is_trace_stubbed, layout_wraps_route, prefetch_parse_syntax,
-    RouteInfo, RoutePlan, ScanResult,
+    PageComponentInfo, RootComponentInfo, RouteInfo, RoutePlan, ScanResult,
   };
+  use crate::{htmx::FormActionMethod, ids::ComponentHandlerIds};
 
   fn scan_result(routes: &[&str], middlewares: &[&str]) -> ScanResult {
     let mut result = ScanResult::new();
@@ -1998,5 +2020,86 @@ mod tests {
   fn trace_does_not_stub_virtual_modules() {
     assert!(!stubbed("recooler::metadata", "recooler::metadata"));
     assert!(!stubbed("virtual:module", "virtual:module"));
+  }
+
+  fn handler_ids(events: &[&str], actions: &[&str]) -> ComponentHandlerIds {
+    ComponentHandlerIds {
+      action_handlers: HashMap::from([(
+        FormActionMethod::Post,
+        actions.iter().map(|id| id.to_string()).collect(),
+      )]),
+      event_handlers: events.iter().map(|id| id.to_string()).collect(),
+    }
+  }
+
+  fn route(module_id: &str, page_handlers: Option<ComponentHandlerIds>) -> RouteInfo {
+    RouteInfo {
+      module_id: ModuleId::from(module_id),
+      page_component: page_handlers.map(|handlers| PageComponentInfo {
+        handlers,
+        layouts: vec![],
+      }),
+      request_handlers: HashSet::new(),
+      on_request: false,
+      on_load: false,
+      head: None,
+    }
+  }
+
+  #[test]
+  fn root_event_handlers_are_added_to_every_page() {
+    let mut result = ScanResult::new();
+    result.routes.insert(
+      "/".to_string(),
+      route(
+        "src/routes/index.tsx",
+        Some(handler_ids(&["src/routes/index.tsx@0"], &["page-action"])),
+      ),
+    );
+    result.routes.insert(
+      "/empty".to_string(),
+      route("src/routes/empty/index.tsx", Some(handler_ids(&[], &[]))),
+    );
+    result
+      .routes
+      .insert("/api".to_string(), route("src/routes/api/index.tsx", None));
+
+    result.set_root_component(RootComponentInfo {
+      module_id: ModuleId::from("src/root.tsx"),
+      handlers: handler_ids(&["src/root.tsx@0"], &["root-action"]),
+      head: None,
+    });
+
+    let page_handlers = |path: &str| {
+      result.routes[path]
+        .page_component
+        .as_ref()
+        .unwrap()
+        .handlers
+        .clone()
+    };
+
+    let index = page_handlers("/");
+    assert_eq!(
+      index.event_handlers,
+      HashSet::from([
+        "src/routes/index.tsx@0".to_string(),
+        "src/root.tsx@0".to_string()
+      ])
+    );
+    // root form actions are handled by the root middleware, not by every page
+    assert_eq!(
+      index.action_handlers[&FormActionMethod::Post],
+      HashSet::from(["page-action".to_string()])
+    );
+
+    // a page without handlers of its own still needs a client script for the root
+    assert_eq!(
+      page_handlers("/empty").event_handlers,
+      HashSet::from(["src/root.tsx@0".to_string()])
+    );
+
+    assert!(result.routes["/api"].page_component.is_none());
+    assert!(result.root_component.is_some());
   }
 }
