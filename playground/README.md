@@ -28,11 +28,10 @@ pnpm --filter playground check # node --test against the built hono app
 | static, `[param]` and `[[catchall]]` routes | `src/routes/posts/{new,[id],[[rest]]}` |
 | group middleware | `src/routes/(admin)/middleware.ts` (sets `x-group: admin` on `/admin` only) |
 | layout with a `head` function | `src/routes/layout.tsx` |
-| root component and `head` object | `src/root.tsx` |
+| root component and `head` object (with its own charset, which must not be duplicated) | `src/root.tsx` |
 | route `head` function using params | `src/routes/posts/[id]/index.tsx` |
 | form actions (`hx-post`) returning JSX (200) and nothing (204) | `src/routes/index.tsx` |
 | `hx-on:click` event handler inlined as a client script | `src/routes/index.tsx` |
 | `client_banned_imports` | `farm.config.ts` bans `src/lib/db.ts`, which pages import but handlers must not |
 
 The tests in `test/app.test.mjs` import `build/main.js` and assert on `app.request()` responses.
-Tests marked `todo` describe the intended behaviour for known bugs and do not fail the run.

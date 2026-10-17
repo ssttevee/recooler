@@ -25,6 +25,11 @@ test("root head object and layout head function build the title", async () => {
   assert.match(html, /<title>Playground - Recooler<\/title>/);
 });
 
+test("a charset declared by the root head is not duplicated", async () => {
+  const { html } = await get("/");
+  assert.equal(html.match(/<meta charset=/gi)?.length, 1);
+});
+
 test("route head function runs last and sees the route params", async () => {
   const { html } = await get("/posts/1");
   assert.match(html, /<title>Hello world - Playground - Recooler<\/title>/);
@@ -43,7 +48,8 @@ test("[[catchall]] route matches multiple segments", async () => {
 });
 
 test("static route takes precedence over a [param] sibling", async () => {
-  const { html } = await get("/posts/new");
+  const { res, html } = await get("/posts/new");
+  assert.equal(res.status, 200);
   assert.match(html, /<h1>posts-new<\/h1>/);
 });
 
@@ -72,6 +78,15 @@ test("form action returning JSX responds 200 with the rendered html", async () =
   const res = await app.request(greet, { method: "POST", body });
   assert.equal(res.status, 200);
   assert.match(await res.text(), /<p id="greeting">hello Ada<\/p>/);
+});
+
+test("unknown form actions are rejected by the actions middleware", async () => {
+  for (const action of ["nope", "constructor"]) {
+    const res = await app.request(`/?action=${action}`, { method: "POST", body: new FormData() });
+    assert.equal(res.status, 404);
+    // the middleware's own 404, not hono's fallback for a POST nothing else handles
+    assert.equal(await res.text(), "unknown action");
+  }
 });
 
 test("form action returning nothing responds 204", async () => {
