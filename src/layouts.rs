@@ -1,7 +1,7 @@
 use std::{cell::RefCell, collections::HashMap, sync::Mutex};
 
 use farmfe_core::{
-  error::Result,
+  error::{CompilationError, Result},
   module::{Module, ModuleId, ModuleMetaData},
 };
 
@@ -108,7 +108,16 @@ impl LayoutTree {
       }
 
       let exports = find_exports(&main_module.id, script);
-      assert!(node.module.is_none());
+      // e.g. the layouts of the `[id]` and `:id` directories
+      if let Some(existing) = &node.module {
+        return Err(CompilationError::GenericError(format!(
+          "only one layout may be used per path, found {} and {} for {}",
+          existing.module_id.relative_path(),
+          main_module.id.relative_path(),
+          path
+        )));
+      }
+
       let head = find_head_export_type(&script.ast);
       // println!("inserting layout: {} {:?}", path, head);
       node.module = Some(LayoutInfo {

@@ -451,6 +451,16 @@ impl ScanResult {
   ) -> Result<()> {
     let main_module = &modules[0];
 
+    // e.g. the routes of the `[id]` and `:id` directories
+    if let Some(existing) = self.routes.get(&path) {
+      return Err(CompilationError::GenericError(format!(
+        "only one route may be used per path, found {} and {} for {}",
+        existing.module_id.relative_path(),
+        main_module.id.relative_path(),
+        path
+      )));
+    }
+
     if let ModuleMetaData::Script(script) = main_module.meta.as_ref() {
       let exports = find_exports(&main_module.id, &script);
 
@@ -921,6 +931,37 @@ pub(crate) fn is_route_file(routes_dir: &str, file_path: &Path) -> bool {
       .is_some_and(|name| ROUTE_FILE_PATTERN.is_match(name))
 }
 
+/// Returns an error naming the files if a directory contains more than one of `files`, e.g. both a
+/// `layout.tsx` and a `layout.jsx`, which would be used for the same path.
+fn ensure_one_file_per_dir(kind: &str, files: &[PathBuf]) -> Result<()> {
+  let mut files_by_dir = HashMap::<&Path, Vec<String>>::new();
+  for file in files {
+    files_by_dir
+      .entry(file.parent().unwrap_or(Path::new("")))
+      .or_default()
+      .push(file.display().to_string());
+  }
+
+  let mut duplicates = files_by_dir
+    .into_values()
+    .filter(|files| files.len() > 1)
+    .map(|mut files| {
+      files.sort();
+      files.join(", ")
+    })
+    .collect::<Vec<_>>();
+  if duplicates.is_empty() {
+    return Ok(());
+  }
+
+  duplicates.sort();
+  Err(CompilationError::GenericError(format!(
+    "only one {} file may be used per directory, found:\n  {}",
+    kind,
+    duplicates.join("\n  ")
+  )))
+}
+
 pub(crate) struct ScannedDir {
   pub(crate) layout_files: Vec<PathBuf>,
   pub(crate) route_files: Vec<PathBuf>,
@@ -982,6 +1023,9 @@ impl FarmPluginRecooler {
       }
     }
 
+    ensure_one_file_per_dir("route", &route_files)?;
+    ensure_one_file_per_dir("layout", &layout_files)?;
+
     let root_file = PathBuf::from(&self.src_dir).join("root.tsx");
     Ok(ScannedDir {
       layout_files,
@@ -1014,7 +1058,6 @@ impl FarmPluginRecooler {
   pub(crate) fn entrypoint_prefetch_files(&self) -> Result<Vec<PathBuf>> {
     let dir_contents = self.scan_dir()?;
 
-    // only the last route file of a path is kept by the scan, see `ScanResult::add_route`
     let mut route_files = HashMap::<String, &PathBuf>::new();
     for route_file in &dir_contents.route_files {
       route_files.insert(file_to_route_path(&self.routes_dir, route_file), route_file);
@@ -1271,9 +1314,11 @@ mod tests {
   use farmfe_toolkit::script::parse_module;
   use std::{cmp::Ordering, collections::HashSet};
 
+  use std::path::PathBuf;
+
   use super::{
-    compare_route_paths, fixture::Fixture, ignored_on_load_warning, is_trace_stubbed,
-    layout_wraps_route, prefetch_parse_syntax, RouteInfo, RoutePlan, ScanResult,
+    compare_route_paths, ensure_one_file_per_dir, fixture::Fixture, ignored_on_load_warning,
+    is_trace_stubbed, layout_wraps_route, prefetch_parse_syntax, RouteInfo, RoutePlan, ScanResult,
   };
 
   fn scan_result(routes: &[&str], middlewares: &[&str]) -> ScanResult {
@@ -1606,6 +1651,85 @@ mod tests {
         source
       );
     }
+  }
+
+  const PAGE: &str = "export default () => <p />;";
+  const LAYOUT: &str =
+    "export default (Page: any) => (props: any) => <main><Page {...props} /></main>;";
+
+  fn scan_error(files: &[(&str, &str)]) -> String {
+    let fixture = Fixture::new(files, json!({ "src_dir": "src" }));
+    match fixture.plugin.scan_routes_(&fixture.context) {
+      Ok(_) => panic!("expected the scan to fail"),
+      Err(e) => e.to_string(),
+    }
+  }
+
+  #[test]
+  fn one_file_per_dir() {
+    let paths = |paths: &[&str]| paths.iter().map(PathBuf::from).collect::<Vec<_>>();
+    assert!(ensure_one_file_per_dir(
+      "layout",
+      &paths(&["r/layout.tsx", "r/a/layout.tsx", "r/(g)/layout.jsx"])
+    )
+    .is_ok());
+
+    let message = ensure_one_file_per_dir(
+      "layout",
+      &paths(&[
+        "r/layout.tsx",
+        "r/a/layout.jsx",
+        "r/a/b/layout.tsx",
+        "r/a/layout.tsx",
+        "r/layout.js",
+      ]),
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(message.contains("only one layout file may be used per directory"));
+    assert!(message.contains("r/a/layout.jsx, r/a/layout.tsx"));
+    assert!(message.contains("r/layout.js, r/layout.tsx"));
+    assert!(!message.contains("r/a/b/layout.tsx"));
+  }
+
+  #[test]
+  fn scan_rejects_two_layout_or_route_files_in_a_dir() {
+    let message = scan_error(&[
+      ("src/routes/index.tsx", PAGE),
+      ("src/routes/layout.tsx", LAYOUT),
+      ("src/routes/layout.jsx", LAYOUT),
+    ]);
+    assert!(message.contains("only one layout file may be used per directory"));
+    assert!(message.contains("src/routes/layout.jsx, "));
+    assert!(message.contains("src/routes/layout.tsx"));
+
+    let message = scan_error(&[
+      ("src/routes/index.tsx", PAGE),
+      ("src/routes/index.jsx", PAGE),
+    ]);
+    assert!(message.contains("only one route file may be used per directory"));
+    assert!(message.contains("src/routes/index.jsx, "));
+    assert!(message.contains("src/routes/index.tsx"));
+  }
+
+  #[test]
+  fn scan_rejects_two_layouts_or_routes_for_a_path() {
+    let message = scan_error(&[
+      ("src/routes/[id]/index.tsx", PAGE),
+      ("src/routes/[id]/layout.tsx", LAYOUT),
+      ("src/routes/:id/layout.tsx", LAYOUT),
+    ]);
+    assert!(message.contains("only one layout may be used per path"));
+    assert!(message.contains("/src/routes/:id/layout.tsx and "));
+    assert!(message.contains("/src/routes/[id]/layout.tsx for /:id"));
+
+    let message = scan_error(&[
+      ("src/routes/[id]/index.tsx", PAGE),
+      ("src/routes/:id/index.tsx", PAGE),
+    ]);
+    assert!(message.contains("only one route may be used per path"));
+    assert!(message.contains("/src/routes/:id/index.tsx and "));
+    assert!(message.contains("/src/routes/[id]/index.tsx for /:id"));
   }
 
   #[test]
