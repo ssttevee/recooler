@@ -51,7 +51,7 @@ declare interface FormActionFn<
   (
     ctx: TContext,
     payload: TPayload,
-  ): Promise<FormActionResult> | FormActionResult;
+  ): PromiseLike<FormActionResult> | FormActionResult;
 }
 
 declare interface EventHandlerFn<
