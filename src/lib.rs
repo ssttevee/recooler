@@ -738,8 +738,7 @@ impl FarmPluginRecooler {
         &root_action_methods,
         &root_hoc_ident,
         &scan_result.root_component,
-        &scan_result.tree(),
-        None,
+        &scan_result.route_plan(),
       )?
       .as_str();
 
