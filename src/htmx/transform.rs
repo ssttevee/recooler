@@ -616,13 +616,15 @@ impl<'a> ComponentTransformVisitor<'a> {
 
   /// Starts a component frame if `params` belong to the outermost function of a parameterized
   /// route module.
-  fn enter_function<'p>(&mut self, mut params: impl Iterator<Item = &'p Pat>) -> bool {
+  fn enter_function<'p>(&mut self, params: impl Iterator<Item = &'p Pat>) -> bool {
     if self.component.is_some()
       || !self.action_frames.is_empty()
       || !matches!(self.route_pathname, RoutePathname::Parameterized { .. })
     {
       return false;
     }
+
+    let mut params = params.skip_while(|pat| is_this_param(pat));
 
     let (props_ident, rewrite_param, rest_param) = match params.next() {
       None => (None, false, false),
@@ -661,7 +663,11 @@ impl<'a> ComponentTransformVisitor<'a> {
 fn new_action_frame(func: &Expr, atom_store: &mut AtomStore) -> ActionFrame {
   let first_param = match func {
     Expr::Arrow(arrow) => arrow.params.first(),
-    Expr::Fn(FnExpr { function, .. }) => function.params.first().map(|param| &param.pat),
+    Expr::Fn(FnExpr { function, .. }) => function
+      .params
+      .iter()
+      .map(|param| &param.pat)
+      .find(|pat| !is_this_param(pat)),
     _ => None,
   };
 
@@ -692,7 +698,11 @@ fn add_first_param(func: &mut Expr, ident: Ident) {
   match func {
     Expr::Arrow(arrow) => arrow.params.insert(0, pat),
     Expr::Fn(FnExpr { function, .. }) => function.params.insert(
-      0,
+      function
+        .params
+        .iter()
+        .take_while(|param| is_this_param(&param.pat))
+        .count(),
       Param {
         span: Default::default(),
         decorators: vec![],
@@ -701,6 +711,12 @@ fn add_first_param(func: &mut Expr, ident: Ident) {
     ),
     _ => {}
   }
+}
+
+/// Returns whether `pat` is a typescript `this` param, which only declares the type of `this` and
+/// is not one of the function's params.
+fn is_this_param(pat: &Pat) -> bool {
+  matches!(pat, Pat::Ident(binding) if binding.id.sym == "this")
 }
 
 /// Replaces a destructured props param with `props_ident` and moves the destructuring into the
@@ -824,11 +840,12 @@ impl<'a> VisitMut for ComponentTransformVisitor<'a> {
     func.visit_mut_children_with(self);
 
     if let Some(props_ident) = self.exit_function() {
-      replace_props_param(
-        &mut func.params[0].pat,
-        func.body.as_mut().unwrap(),
-        props_ident,
-      );
+      let param = func
+        .params
+        .iter_mut()
+        .find(|param| !is_this_param(&param.pat))
+        .unwrap();
+      replace_props_param(&mut param.pat, func.body.as_mut().unwrap(), props_ident);
     }
   }
 
@@ -2377,6 +2394,47 @@ mod tests {
       "#,
     ));
     assert!(result.contains("(...__recooler_props: [RouteProps])=>{ let [{ id }] = __recooler_props; return <button hx-post={`/article/${encodeURIComponent(__recooler_props[0].ctx.req.param(\"id\"))}?action="));
+  }
+
+  #[test]
+  fn skips_typescript_this_param_for_context() {
+    let result = compact(&transform(
+      r#"
+        export default function C(this: unknown, { id }: RouteProps) {
+          return <button hx-post={function (this: unknown) {
+            return <button hx-post={() => id} />;
+          }} />;
+        }
+      "#,
+    ));
+
+    assert!(
+      result.contains(
+        "function C(this: unknown, __recooler_props: RouteProps) { let { id } = __recooler_props;"
+      ),
+      "{}",
+      result
+    );
+    assert!(
+      result.contains("encodeURIComponent(__recooler_props.ctx.req.param(\"id\"))"),
+      "{}",
+      result
+    );
+    assert!(
+      result.contains("function(this: unknown, __recooler_ctx) {"),
+      "{}",
+      result
+    );
+    assert!(
+      result.contains("encodeURIComponent(__recooler_ctx.req.param(\"id\"))"),
+      "{}",
+      result
+    );
+    assert!(
+      !result.contains("this.ctx") && !result.contains("this.req"),
+      "{}",
+      result
+    );
   }
 
   #[test]
