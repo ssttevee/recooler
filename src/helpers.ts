@@ -488,6 +488,16 @@ export function actionsMiddleware(
           return ctx.newResponse(null, 204);
         }
 
+        // an object that renders itself, like an element, is rendered directly so that an async
+        // `toHTML` is awaited as before
+        if (
+          typeof result === "object" &&
+          "toHTML" in result &&
+          typeof result.toHTML === "function"
+        ) {
+          return ctx.html(await result.toHTML());
+        }
+
         // anything else is rendered like jsx children, so strings are escaped, arrays and nested
         // promises are resolved, and `false` or `""` render nothing
         const element = await createElement(Fragment, {}, result as Children);

@@ -114,6 +114,10 @@ describe("actionsMiddleware results", () => {
     assert.equal(await html(() => createElement("i", {}, "jsx")), "<i>jsx</i>");
   });
 
+  test("awaits an object whose toHTML is async", async () => {
+    assert.equal(await html(() => ({ toHTML: async () => "<i>async</i>" })), "<i>async</i>");
+  });
+
   test("renders promises, including nested ones", async () => {
     assert.equal(await html(async () => "async"), "async");
     assert.equal(

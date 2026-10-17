@@ -168,7 +168,7 @@ Middleware files placed directly in a group directory (i.e. a parenthesized dire
 
 ### Form Actions
 
-Any `hx-{method}` attributes with function values will be converted to a form action. This works for all components within the configured source directory (which is `src` by default), including layouts and the root component. The function may optionally be async and return a hono response, or anything that can be rendered as JSX children (elements, strings, numbers, arrays and promises of them), which is sent as html. Returning `undefined` or `null` sends an empty `204 No Content` response, while `false` and `""` render nothing and send an empty `200` response, just like `{false}` in JSX. A `Response` thrown by the action or by a component it renders is sent as is.
+Any `hx-{method}` attributes with function values will be converted to a form action. This works for all components within the configured source directory (which is `src` by default), including layouts and the root component. The function may optionally be async and return a hono response, or anything that can be rendered as JSX children (elements, strings, numbers, arrays and promises of them), which is sent as html. Returning `undefined` or `null` sends an empty `204 No Content` response, while `false`, `""`, `0` and `NaN` render nothing and send an empty `200` response, just like `{false}` or `{0}` in JSX. A `Response` thrown by the action or by a component it renders is sent as is.
 
 This is a little similar to next.js's `"use server"` functions, but specifically for htmx.
 
@@ -237,7 +237,7 @@ return (
 );
 ```
 
-Form actions are requested with an `action` query parameter on the page's url. Requests without one are handled by the route's own handlers (e.g. `onPost`), and requests whose `action` does not name any form action of the app are rejected with a 404.
+Form actions are requested with an `action` query parameter on the page's url, so the `action` query parameter is reserved on every route that has form actions for the request's method (every route, once the root component has one). On those routes, requests without an `action` parameter are handled by the route's own handlers (e.g. `onPost`), and requests whose `action` does not name any form action of the app are rejected with a 404. Routes without form actions for the method pass the parameter through untouched.
 
 Form actions in a route module post to the path of the route, e.g. `/blog/my-post?action=...`, but those in any other module, such as a layout or the root component, render on many pages, so they post to the relative url `?action=...` to be handled by the current page. Like any relative url, it is resolved against the base url of the document, which is a known limitation: on a page with a `<base href>` (e.g. the `base` of a head function), it posts to the base url, and after the url changes without rendering the page again (e.g. with `hx-push-url` or `history.pushState`), it posts to the new url. Either fails unless that url is a page that renders the same action.
 
