@@ -1021,8 +1021,29 @@ fn route_path_shape(hono_path: &str) -> String {
     .join("/")
 }
 
+/// Returns the request methods a route registers handlers for, or `None` for every method.
+fn route_methods(route: &RouteInfo) -> Option<HashSet<String>> {
+  if route.on_request {
+    return None;
+  }
+
+  let mut methods = HashSet::new();
+  if let Some(page) = &route.page_component {
+    methods.insert(String::from("GET"));
+    for method in page.handlers.action_handlers.keys() {
+      methods.insert(format!("{:?}", method).to_uppercase());
+    }
+  }
+  for method in &route.request_handlers {
+    methods.insert(format!("{:?}", method).to_uppercase());
+  }
+  Some(methods)
+}
+
 /// Fails for routes whose hono paths differ only in the names of their params, e.g. the sibling
-/// directories `[id]` and `[slug]`, since the later one could never be matched.
+/// directories `[id]` and `[slug]`, when they handle the same request method, since the later one
+/// could never be matched. Routes handling different methods, e.g. a page and a route with only
+/// `onPost`, are fine: a request falls through to the one that handles its method.
 fn ensure_distinct_route_shapes(result: &ScanResult) -> Result<()> {
   let mut routes = result
     .routes
@@ -1030,21 +1051,30 @@ fn ensure_distinct_route_shapes(result: &ScanResult) -> Result<()> {
     .map(|(path, route)| (route_path_without_groups(path), route))
     .collect::<Vec<_>>();
   routes.sort_by(|a, b| a.0.cmp(&b.0));
-  routes.dedup_by(|a, b| a.0 == b.0);
 
-  let mut shapes = HashMap::<String, (&String, &RouteInfo)>::new();
+  let mut shapes = HashMap::<String, Vec<(&String, &RouteInfo)>>::new();
   for (hono_path, route) in &routes {
-    if let Some((other_path, other)) =
-      shapes.insert(route_path_shape(hono_path), (hono_path, route))
-    {
-      return Err(CompilationError::GenericError(format!(
-        "routes {} ({}) and {} ({}) differ only in the names of their params, so only one of them can ever match; rename or merge them",
-        other_path,
-        other.module_id.relative_path(),
-        hono_path,
-        route.module_id.relative_path()
-      )));
+    let others = shapes.entry(route_path_shape(hono_path)).or_default();
+    for (other_path, other) in others.iter() {
+      // the same hono path in several groups is allowed, see `route_plan`
+      if *other_path == hono_path {
+        continue;
+      }
+      let overlap = match (route_methods(other), route_methods(route)) {
+        (Some(a), Some(b)) => a.intersection(&b).next().is_some(),
+        _ => true,
+      };
+      if overlap {
+        return Err(CompilationError::GenericError(format!(
+          "routes {} ({}) and {} ({}) differ only in the names of their params and handle the same request methods, so only one of them can ever match; rename or merge them",
+          other_path,
+          other.module_id.relative_path(),
+          hono_path,
+          route.module_id.relative_path()
+        )));
+      }
     }
+    others.push((hono_path, route));
   }
 
   Ok(())
@@ -1820,16 +1850,35 @@ mod tests {
     assert!(message.contains("/:id"), "{}", message);
     assert!(message.contains("/:slug"), "{}", message);
 
-    // the same hono path in two groups is allowed, and a pattern tells params apart
+    // the same hono path in two groups is allowed, a pattern tells params apart, and routes
+    // handling different methods fall through to each other
     let fixture = Fixture::new(
       &[
         ("src/routes/(a)/[id]/index.tsx", PAGE),
         ("src/routes/(b)/[id]/index.tsx", PAGE),
         ("src/routes/[n{\\d+}]/index.tsx", PAGE),
+        ("src/routes/(pub)/posts/[slug]/index.tsx", PAGE),
+        (
+          "src/routes/(admin)/posts/[postId]/index.tsx",
+          "export function onPost(c: any) { return c.text('posted'); }",
+        ),
       ],
       json!({ "src_dir": "src" }),
     );
     fixture.plugin.scan_routes_(&fixture.context).unwrap();
+
+    let message = scan_error(&[
+      ("src/routes/(pub)/posts/[slug]/index.tsx", PAGE),
+      (
+        "src/routes/(admin)/posts/[postId]/index.tsx",
+        "export function onRequest(c: any) { return c.text('any'); }",
+      ),
+    ]);
+    assert!(
+      message.contains("handle the same request methods"),
+      "{}",
+      message
+    );
   }
 
   #[test]
