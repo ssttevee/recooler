@@ -95,15 +95,20 @@ impl FarmPluginRecooler {
     root_hoc_ident: &String,
     root_component: &Option<RootComponentInfo>,
     tree: &RouteGroupTree,
-    inline_middlewares: Option<Vec<ModuleId>>,
+    // `None` for the top level tree, otherwise the middleware of the enclosing groups
+    enclosing_group_middleware: Option<Vec<ModuleId>>,
   ) -> Result<String> {
+    let mut group_middlewares = String::new();
     let mut middlewares = String::new();
     let mut handlers = String::new();
 
-    let should_inline_middleware = inline_middlewares.is_some();
-    let mut base_middleware = inline_middlewares.unwrap_or_default();
+    // middleware placed directly in a group directory only applies to the routes of the group,
+    // including those of nested groups, so rather than for every request under a prefix, it is
+    // used for the exact path of each of the group's routes
+    let is_group = enclosing_group_middleware.is_some();
+    let mut group_middleware = enclosing_group_middleware.unwrap_or_default();
 
-    if should_inline_middleware {
+    if is_group {
       if let Some(RouteAndMiddleware {
         middleware: Some(root_middleware),
         ..
@@ -112,7 +117,7 @@ impl FarmPluginRecooler {
         let mut sorted = root_middleware.iter().cloned().collect::<Vec<_>>();
         sorted.sort();
 
-        base_middleware.extend(sorted.clone());
+        group_middleware.extend(sorted);
       }
     }
 
@@ -140,11 +145,7 @@ impl FarmPluginRecooler {
           root_hoc_ident,
           root_component,
           group_tree,
-          if fixed_group_path == "/" {
-            Some(base_middleware.clone())
-          } else {
-            None
-          },
+          Some(group_middleware.clone()),
         )?,
       )
       .as_str();
@@ -172,15 +173,27 @@ impl FarmPluginRecooler {
     });
 
     for (path, RouteAndMiddleware { route, middleware }) in sorted_routes_and_middlewares {
-      let mut combined_middleware = base_middleware.clone();
+      let pathjs = serde_json::to_string(path).unwrap();
 
-      if let Some(module_ids) = middleware {
-        let mut sorted_module_ids = module_ids.iter().cloned().collect::<Vec<_>>();
-        sorted_module_ids.sort();
-        combined_middleware.extend(sorted_module_ids);
+      if route.is_some() {
+        for module_id in &group_middleware {
+          group_middlewares += format!(
+            "{}.use({}, {});\n",
+            hono_ident,
+            pathjs,
+            import_idents.identifier(module_id, "default"),
+          )
+          .as_str();
+        }
       }
 
-      let pathjs = serde_json::to_string(path).unwrap();
+      let mut path_middleware = vec![];
+      // the middleware placed directly in this group's directory is in `group_middleware`
+      if let Some(module_ids) = middleware.as_ref().filter(|_| !(is_group && path == "/")) {
+        path_middleware.extend(module_ids.iter().cloned());
+        path_middleware.sort();
+      }
+
       // if path.ends_with("{.+}") {
       //   pathjs = format!(
       //     "[{}, {}]",
@@ -191,27 +204,20 @@ impl FarmPluginRecooler {
 
       let mut route_params_prefix = pathjs.clone() + ", ";
 
-      if should_inline_middleware {
-        for module_id in combined_middleware {
-          route_params_prefix +=
-            format!("{}, ", import_idents.identifier(&module_id, "default")).as_str()
-        }
-      } else {
-        for module_id in combined_middleware {
-          let use_params_prefix = if path == "/" {
-            String::from("\"*\"")
-          } else {
-            serde_json::to_string(&(path.clone() + "/*")).unwrap()
-          };
+      for module_id in path_middleware {
+        let use_params_prefix = if path == "/" {
+          String::from("\"*\"")
+        } else {
+          serde_json::to_string(&(path.clone() + "/*")).unwrap()
+        };
 
-          middlewares += format!(
-            "{}.use({}{});\n",
-            hono_ident,
-            use_params_prefix + ", ",
-            import_idents.identifier(&module_id, "default"),
-          )
-          .as_str();
-        }
+        middlewares += format!(
+          "{}.use({}{});\n",
+          hono_ident,
+          use_params_prefix + ", ",
+          import_idents.identifier(&module_id, "default"),
+        )
+        .as_str();
       }
 
       if let Some(route) = route {
@@ -352,7 +358,7 @@ impl FarmPluginRecooler {
       }
     }
 
-    Ok(middlewares + handlers.as_str())
+    Ok(group_middlewares + middlewares.as_str() + handlers.as_str())
   }
 }
 
