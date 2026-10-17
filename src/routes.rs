@@ -334,13 +334,19 @@ fn route_segment_kind(segment: &str) -> RouteSegmentKind {
 /// ends at a catch-all, which also matches the longer one's requests. Paths that are otherwise
 /// equal, such as those differing only in parameter names, are compared lexically.
 pub(crate) fn compare_route_paths(a: &str, b: &str) -> Ordering {
+  compare_route_shapes(a, b).then_with(|| a.cmp(b))
+}
+
+/// Like [`compare_route_paths`], but paths that differ only in the names of their params, which
+/// match the same requests, are equal.
+fn compare_route_shapes(a: &str, b: &str) -> Ordering {
   let mut a_segments = a.split('/').filter(|s| !s.is_empty());
   let mut b_segments = b.split('/').filter(|s| !s.is_empty());
   let mut after_catch_all = false;
 
   loop {
     let (a_segment, b_segment) = match (a_segments.next(), b_segments.next()) {
-      (None, None) => return a.cmp(b),
+      (None, None) => return Ordering::Equal,
       (None, Some(_)) if after_catch_all => return Ordering::Greater,
       (None, Some(_)) => return Ordering::Less,
       (Some(_), None) if after_catch_all => return Ordering::Less,
@@ -410,8 +416,23 @@ impl ScanResult {
       .iter()
       .map(|(path, route)| (route_path_without_groups(path), path, route))
       .collect::<Vec<_>>();
-    // routes with the same hono path, from different groups, are ordered by their group names
-    routes.sort_by(|a, b| compare_route_paths(&a.0, &b.0).then_with(|| a.1.cmp(b.1)));
+    // routes whose paths match the same requests, i.e. the same path from different groups or
+    // paths differing only in param names, are ordered with the pages first: the registrations of
+    // a page's form actions (its own, its layouts' and the root component's) pass requests without
+    // a matching `action` along with `next()`, so a page goes before a route that responds to the
+    // same method with a terminal handler, e.g. a page with form actions next to an `onPost`-only
+    // route. Then by path, then by group name
+    routes.sort_by(|a, b| {
+      compare_route_shapes(&a.0, &b.0)
+        .then_with(|| {
+          b.2
+            .page_component
+            .is_some()
+            .cmp(&a.2.page_component.is_some())
+        })
+        .then_with(|| a.0.cmp(&b.0))
+        .then_with(|| a.1.cmp(b.1))
+    });
 
     // the middleware of a directory runs before that of the directories below it, which a
     // `[param]` directory's middleware also matches the requests of, e.g. `/:id/*` matches those of
@@ -1021,29 +1042,34 @@ fn route_path_shape(hono_path: &str) -> String {
     .join("/")
 }
 
-/// Returns the request methods a route registers handlers for, or `None` for every method.
-fn route_methods(route: &RouteInfo) -> Option<HashSet<String>> {
+/// Returns `(method, handler)` for every request method a route responds to with a handler that
+/// doesn't pass the request along: the page for GET, the `on{Method}` handlers, or `onRequest` for
+/// every method. Form actions are not included: their registrations pass requests without a
+/// matching `action` along with `next()`.
+fn terminal_handlers(route: &RouteInfo) -> Vec<(String, String)> {
   if route.on_request {
-    return None;
+    return vec![(String::from("every method"), String::from("onRequest"))];
   }
 
-  let mut methods = HashSet::new();
-  if let Some(page) = &route.page_component {
-    methods.insert(String::from("GET"));
-    for method in page.handlers.action_handlers.keys() {
-      methods.insert(format!("{:?}", method).to_uppercase());
-    }
+  let mut handlers = vec![];
+  if route.page_component.is_some() {
+    handlers.push((String::from("GET"), String::from("the page")));
   }
   for method in &route.request_handlers {
-    methods.insert(format!("{:?}", method).to_uppercase());
+    handlers.push((
+      format!("{:?}", method).to_uppercase(),
+      format!("on{:?}", method),
+    ));
   }
-  Some(methods)
+  handlers.sort();
+  handlers
 }
 
 /// Fails for routes whose hono paths differ only in the names of their params, e.g. the sibling
-/// directories `[id]` and `[slug]`, when they handle the same request method, since the later one
-/// could never be matched. Routes handling different methods, e.g. a page and a route with only
-/// `onPost`, are fine: a request falls through to the one that handles its method.
+/// directories `[id]` and `[slug]`, when both respond to the same request method, since the later
+/// one could never be matched. Routes responding to different methods, e.g. a page with form
+/// actions and a route with only `onPost`, are fine: a request falls through to the one that
+/// responds to it, see `route_plan`.
 fn ensure_distinct_route_shapes(result: &ScanResult) -> Result<()> {
   let mut routes = result
     .routes
@@ -1060,17 +1086,26 @@ fn ensure_distinct_route_shapes(result: &ScanResult) -> Result<()> {
       if *other_path == hono_path {
         continue;
       }
-      let overlap = match (route_methods(other), route_methods(route)) {
-        (Some(a), Some(b)) => a.intersection(&b).next().is_some(),
-        _ => true,
-      };
-      if overlap {
+      let other_handlers = terminal_handlers(other);
+      let handlers = terminal_handlers(route);
+      let conflict = other_handlers.iter().find_map(|(method, handler)| {
+        handlers
+          .iter()
+          .find(|(m, _)| m == method || m == "every method" || method == "every method")
+          .map(|(m, h)| (method, handler, m, h))
+      });
+      if let Some((other_method, other_handler, method, handler)) = conflict {
         return Err(CompilationError::GenericError(format!(
-          "routes {} ({}) and {} ({}) differ only in the names of their params and handle the same request methods, so only one of them can ever match; rename or merge them",
+          "routes {} ({}) and {} ({}) differ only in the names of their params, so only one of them can ever match, and both respond to {}: {} ({}) and {} ({}); rename or merge them",
           other_path,
           other.module_id.relative_path(),
           hono_path,
-          route.module_id.relative_path()
+          route.module_id.relative_path(),
+          if other_method == "every method" { method } else { other_method },
+          other_handler,
+          other_method,
+          handler,
+          method,
         )));
       }
     }
@@ -1867,18 +1902,34 @@ mod tests {
     );
     fixture.plugin.scan_routes_(&fixture.context).unwrap();
 
-    let message = scan_error(&[
-      ("src/routes/(pub)/posts/[slug]/index.tsx", PAGE),
-      (
-        "src/routes/(admin)/posts/[postId]/index.tsx",
-        "export function onRequest(c: any) { return c.text('any'); }",
-      ),
-    ]);
-    assert!(
-      message.contains("handle the same request methods"),
-      "{}",
-      message
+    // a page with its layout's form actions next to an `onPost`-only route is fine too
+    let fixture = Fixture::new(
+      &[
+        ("src/routes/(pub)/posts/[slug]/index.tsx", PAGE),
+        (
+          "src/routes/(pub)/layout.tsx",
+          "export default (Page: any) => (props: any) => <div><form hx-post={() => <p/>} /><Page {...props} /></div>;",
+        ),
+        (
+          "src/routes/(admin)/posts/[postId]/index.tsx",
+          "export function onPost(c: any) { return c.text('posted'); }",
+        ),
+      ],
+      json!({ "src_dir": "src" }),
     );
+    fixture.plugin.scan_routes_(&fixture.context).unwrap();
+
+    for handler in [
+      "export function onRequest(c: any) { return c.text('any'); }",
+      "export function onGet(c: any) { return c.text('got'); }",
+    ] {
+      let message = scan_error(&[
+        ("src/routes/(pub)/posts/[slug]/index.tsx", PAGE),
+        ("src/routes/(admin)/posts/[postId]/index.tsx", handler),
+      ]);
+      assert!(message.contains("both respond to GET"), "{}", message);
+      assert!(message.contains("the page"), "{}", message);
+    }
   }
 
   #[test]
@@ -1960,6 +2011,35 @@ mod tests {
           .lines()
           .position(|line| line.contains(".get(\"/admin\""))
           .unwrap()
+    );
+  }
+
+  #[test]
+  fn route_plan_orders_pages_before_same_shaped_routes() {
+    // `:postId` sorts before `:slug`, but the page's form action registrations pass requests
+    // along, so the page goes first and an `onPost`-only route answers the rest
+    let mut result = scan_result(&["/(admin)/posts/:postId"], &[]);
+    result.routes.insert(
+      "/(pub)/posts/:slug".to_string(),
+      RouteInfo {
+        module_id: ModuleId::from("src/routes/(pub)/posts/:slug/index.tsx"),
+        page_component: Some(PageComponentInfo {
+          handlers: handler_ids(&[], &[]),
+          layouts: vec![],
+        }),
+        request_handlers: HashSet::new(),
+        on_request: false,
+        on_load: false,
+        head: None,
+      },
+    );
+
+    assert_eq!(
+      planned_routes(&result.route_plan())
+        .into_iter()
+        .map(|r| r.0)
+        .collect::<Vec<_>>(),
+      ["/posts/:slug", "/posts/:postId"]
     );
   }
 
