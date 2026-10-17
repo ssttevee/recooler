@@ -246,7 +246,10 @@ mod tests {
         "recooler:@src/routes/a/index.tsx",
         "src/components/button.tsx?recooler-handlers",
       ),
-      ("src/components/button.tsx?recooler-handlers", "src/lib/a.ts"),
+      (
+        "src/components/button.tsx?recooler-handlers",
+        "src/lib/a.ts",
+      ),
       ("src/lib/a.ts", "src/lib/b.ts"),
       ("src/lib/b.ts", "src/lib/a.ts"),
       // a cycle back to the entry
