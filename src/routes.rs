@@ -1065,11 +1065,12 @@ fn terminal_handlers(route: &RouteInfo) -> Vec<(String, String)> {
   handlers
 }
 
-/// Fails for routes whose hono paths differ only in the names of their params, e.g. the sibling
-/// directories `[id]` and `[slug]`, when both respond to the same request method, since the later
-/// one could never be matched. Routes responding to different methods, e.g. a page with form
-/// actions and a route with only `onPost`, are fine: a request falls through to the one that
-/// responds to it, see `route_plan`.
+/// Fails for routes whose hono paths match the same requests, i.e. the same path in different
+/// groups or paths differing only in the names of their params (the sibling directories `[id]` and
+/// `[slug]`), when both respond to the same request method, since the later one could never be
+/// matched. Routes responding to different methods, e.g. a page with form actions and a route with
+/// only `onPost`, are fine: a request falls through to the one that responds to it, see
+/// `route_plan`.
 fn ensure_distinct_route_shapes(result: &ScanResult) -> Result<()> {
   let mut routes = result
     .routes
@@ -1082,10 +1083,6 @@ fn ensure_distinct_route_shapes(result: &ScanResult) -> Result<()> {
   for (hono_path, route) in &routes {
     let others = shapes.entry(route_path_shape(hono_path)).or_default();
     for (other_path, other) in others.iter() {
-      // the same hono path in several groups is allowed, see `route_plan`
-      if *other_path == hono_path {
-        continue;
-      }
       let other_handlers = terminal_handlers(other);
       let handlers = terminal_handlers(route);
       let conflict = other_handlers.iter().find_map(|(method, handler)| {
@@ -1096,7 +1093,7 @@ fn ensure_distinct_route_shapes(result: &ScanResult) -> Result<()> {
       });
       if let Some((other_method, other_handler, method, handler)) = conflict {
         return Err(CompilationError::GenericError(format!(
-          "routes {} ({}) and {} ({}) differ only in the names of their params, so only one of them can ever match, and both respond to {}: {} ({}) and {} ({}); rename or merge them",
+          "routes {} ({}) and {} ({}) match the same requests, so only one of them can ever match, and both respond to {}: {} ({}) and {} ({}); rename or merge them",
           other_path,
           other.module_id.relative_path(),
           hono_path,
@@ -1877,20 +1874,19 @@ mod tests {
       ("src/routes/[id]/index.tsx", PAGE),
       ("src/routes/[slug]/index.tsx", PAGE),
     ]);
-    assert!(
-      message.contains("differ only in the names of their params"),
-      "{}",
-      message
-    );
+    assert!(message.contains("match the same requests"), "{}", message);
     assert!(message.contains("/:id"), "{}", message);
     assert!(message.contains("/:slug"), "{}", message);
 
-    // the same hono path in two groups is allowed, a pattern tells params apart, and routes
-    // handling different methods fall through to each other
+    // the same hono path in two groups responding to different methods is allowed, a pattern
+    // tells params apart, and routes handling different methods fall through to each other
     let fixture = Fixture::new(
       &[
         ("src/routes/(a)/[id]/index.tsx", PAGE),
-        ("src/routes/(b)/[id]/index.tsx", PAGE),
+        (
+          "src/routes/(b)/[id]/index.tsx",
+          "export function onDelete(c: any) { return c.text('deleted'); }",
+        ),
         ("src/routes/[n{\\d+}]/index.tsx", PAGE),
         ("src/routes/(pub)/posts/[slug]/index.tsx", PAGE),
         (
@@ -1929,7 +1925,19 @@ mod tests {
       ]);
       assert!(message.contains("both respond to GET"), "{}", message);
       assert!(message.contains("the page"), "{}", message);
+
+      // the same path in two groups is checked the same way
+      let message = scan_error(&[
+        ("src/routes/(a)/about/index.tsx", PAGE),
+        ("src/routes/(b)/about/index.tsx", handler),
+      ]);
+      assert!(message.contains("both respond to GET"), "{}", message);
     }
+    let message = scan_error(&[
+      ("src/routes/(a)/about/index.tsx", PAGE),
+      ("src/routes/(b)/about/index.tsx", PAGE),
+    ]);
+    assert!(message.contains("/about"), "{}", message);
   }
 
   #[test]
