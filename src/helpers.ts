@@ -32,7 +32,7 @@ export function buildHeadFn(
       if (typeof headFn === "function") {
         head = (await headFn(ctx, head)) ?? {};
       } else if (headFn != null) {
-        head = headFn;
+        head = copyHead(headFn);
       }
     }
 
