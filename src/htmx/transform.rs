@@ -758,8 +758,18 @@ fn escape_tpl_raw(s: &str) -> String {
     .replace("${", "\\${")
 }
 
+/// Returns the htmx attribute name without the `data-` prefix, which htmx accepts on every attribute.
+fn htmx_attr_name(name: &str) -> &str {
+  name.strip_prefix("data-").unwrap_or(name)
+}
+
+fn is_event_handler_attr(name: &str) -> bool {
+  let name = htmx_attr_name(name);
+  name.starts_with("hx-on:") || name.starts_with("hx-on-")
+}
+
 fn form_action_method(name: &str) -> Option<FormActionMethod> {
-  match name {
+  match htmx_attr_name(name) {
     "hx-get" => Some(FormActionMethod::Get),
     "hx-post" => Some(FormActionMethod::Post),
     "hx-put" => Some(FormActionMethod::Put),
@@ -943,7 +953,7 @@ impl<'a> VisitMut for ComponentTransformVisitor<'a> {
           }
         };
 
-        if name.starts_with("hx-on:") || name.starts_with("hx-on-") {
+        if is_event_handler_attr(&name) {
           self.add_event_handler(expr);
           return;
         }
@@ -961,7 +971,7 @@ impl<'a> VisitMut for ComponentTransformVisitor<'a> {
   fn visit_mut_key_value_prop(&mut self, node: &mut KeyValueProp) {
     if node.key.is_str() && is_fn(&node.value) {
       let key = node.key.as_str().unwrap().value.to_string();
-      if key.starts_with("hx-on:") || key.starts_with("hx-on-") {
+      if is_event_handler_attr(&key) {
         self.add_event_handler(&mut node.value);
         return;
       }
@@ -2031,6 +2041,51 @@ mod tests {
         }
       "#,
     );
+  }
+
+  #[test]
+  fn transforms_data_prefixed_attributes() {
+    let result = compact(&transform_at(
+      "/x",
+      r#"
+        export default function C({ msg }) {
+          return (
+            <form data-hx-post={() => msg} ctx={c}>
+              <button data-hx-on:click={() => alert(msg)} data-hx-on-mouseover={() => 1} />
+              <i {...{ "data-hx-delete": () => 2, "data-hx-on:load": () => 3 }} />
+            </form>
+          );
+        }
+      "#,
+    ));
+
+    assert!(result.contains(
+      "data-hx-post={`/x?action=src%2Froutes%2Farticle%2F%5Bid%5D%2Findex.tsx%400${actionScope("
+    ));
+    assert!(!result.contains("ctx={c}"));
+    assert!(result.contains(
+      r#"data-hx-on:click={`$handlers["src/routes/article/[id]/index.tsx@0"](${handlerScope({ msg })}).call(this, event)`}"#
+    ));
+    assert!(result.contains(
+      r#"data-hx-on-mouseover={'$handlers["src/routes/article/[id]/index.tsx@1"].call(this, event)'}"#
+    ));
+    assert!(result.contains(
+      r#""data-hx-delete": `/x?action=src%2Froutes%2Farticle%2F%5Bid%5D%2Findex.tsx%401`"#
+    ));
+    assert!(result.contains(
+      r#""data-hx-on:load": '$handlers["src/routes/article/[id]/index.tsx@2"].call(this, event)'"#
+    ));
+    assert!(result.contains("_action$post$0 = wrapActionWithPayload("));
+    assert!(result.contains("_action$delete$1 = wrapActionWithPayload("));
+    assert!(result.contains("export const _handler$1 = ()=>1;"));
+
+    // only one `data-` prefix, and only on htmx attributes
+    let result = compact(&transform_at(
+      "/x",
+      r#"<a data-data-hx-get={() => 1} data-on:click={() => 2} />"#,
+    ));
+    assert!(result.contains("data-data-hx-get={()=>1}"));
+    assert!(result.contains("data-on:click={()=>2}"));
   }
 
   #[test]
