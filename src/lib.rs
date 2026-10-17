@@ -145,6 +145,9 @@ impl FarmPluginRecooler {
 
 const CLIENT_MODULE_PREFIX: &str = "recooler:@";
 const ENTRYPOINT_MODULE: &str = "recooler::app";
+/// The module that [`ENTRYPOINT_MODULE`] re-exports the generated app from, see
+/// `generate_entrypoint_module`.
+const ENTRYPOINT_IMPL_MODULE: &str = "recooler::app-impl";
 const METADATA_MODULE: &str = "recooler::metadata";
 /// Query for the variant of a component module that only contains its event handlers, the route
 /// `onLoad` export and what they reference, see [`htmx::transform::slice_handler_module`].
@@ -200,6 +203,7 @@ impl Plugin for FarmPluginRecooler {
     _hook_context: &PluginHookContext,
   ) -> Result<Option<PluginResolveHookResult>> {
     if param.source == ENTRYPOINT_MODULE
+      || param.source == ENTRYPOINT_IMPL_MODULE
       || param.source == METADATA_MODULE
       || param.source.starts_with(CLIENT_MODULE_PREFIX)
     {
@@ -221,8 +225,13 @@ impl Plugin for FarmPluginRecooler {
     context: &Arc<CompilationContext>,
     hook_context: &PluginHookContext,
   ) -> Result<Option<PluginLoadHookResult>> {
-    if param.module_id == ENTRYPOINT_MODULE {
-      match self.generate_entrypoint_module(context, hook_context) {
+    if param.module_id == ENTRYPOINT_MODULE || param.module_id == ENTRYPOINT_IMPL_MODULE {
+      let content = if param.module_id == ENTRYPOINT_MODULE {
+        self.generate_entrypoint_module(context)
+      } else {
+        self.generate_entrypoint_impl_module(context, hook_context)
+      };
+      match content {
         Ok(content) => {
           return Ok(Some(PluginLoadHookResult {
             content,
@@ -585,7 +594,33 @@ impl FarmPluginRecooler {
     Ok(out)
   }
 
-  fn generate_entrypoint_module(
+  /// Generates the [`ENTRYPOINT_MODULE`], which re-exports the app from the
+  /// [`ENTRYPOINT_IMPL_MODULE`], see [`Self::generate_entrypoint_impl_module`].
+  ///
+  /// Generating the app takes a while, since the routes must be scanned and their client scripts
+  /// compiled first, and until then the host compile can't discover the modules of the routes. So
+  /// this module is generated right away instead and also imports the route files that the app is
+  /// certain to import (see [`Self::entrypoint_prefetch_files`]), which lets the host compile
+  /// start on them in the meantime. The re-export comes first so that the app and its imports are
+  /// still evaluated in the same order.
+  fn generate_entrypoint_module(&self, context: &Arc<CompilationContext>) -> Result<String> {
+    let mut out = format!(
+      "export {{ default, onRequest }} from {};\n",
+      serde_json::to_string(ENTRYPOINT_IMPL_MODULE).unwrap()
+    );
+
+    for file in self.entrypoint_prefetch_files(&context.config)? {
+      out += format!(
+        "import {};\n",
+        imports::import_source(&ModuleId::from(file.to_str().unwrap()))
+      )
+      .as_str();
+    }
+
+    Ok(out)
+  }
+
+  fn generate_entrypoint_impl_module(
     &self,
     context: &Arc<CompilationContext>,
     _hook_context: &PluginHookContext,

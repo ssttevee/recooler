@@ -1,6 +1,7 @@
 use std::{
   cell::RefCell,
   collections::{HashMap, HashSet, VecDeque},
+  fs,
   path::{Path, PathBuf},
   sync::{Arc, Mutex},
 };
@@ -13,15 +14,19 @@ use farmfe_core::{
   module::{module_graph::ModuleGraph, Module, ModuleId, ModuleMetaData, ModuleType},
   parking_lot::{MappedRwLockReadGuard, RwLockReadGuard},
   plugin::{Plugin, PluginHookContext, PluginLoadHookParam, PluginLoadHookResult},
+  rayon::prelude::*,
   regex::Regex,
   relative_path::PathExt,
   serde_json,
 };
-use farmfe_toolkit::lazy_static::lazy_static;
+use farmfe_toolkit::{
+  lazy_static::lazy_static,
+  script::{module_type_from_id, parse_module, syntax_from_module_type},
+};
 use walkdir::WalkDir;
 
 use crate::{
-  es_ast_helpers::{find_exports, find_head_export_type},
+  es_ast_helpers::{find_exports, find_head_export_type, find_source_value_exports},
   head::{build_head_expr, HeadType},
   htmx::{FormActionMethod, RequestHandlerMethod},
   ids::ComponentHandlerIds,
@@ -465,6 +470,7 @@ impl ScanResult {
             };
           }
 
+          // must match `REQUEST_HANDLER_EXPORTS`
           request_handler!(Get);
           request_handler!(Post);
           request_handler!(Put);
@@ -810,6 +816,47 @@ lazy_static! {
     Regex::new("^middleware(?:@[\\w\\d-]+)?\\.[jt]sx?$").unwrap();
 }
 
+/// The exports of a route module that [`ScanResult::add_route`] registers as request handlers.
+const REQUEST_HANDLER_EXPORTS: [&str; 6] = [
+  "onGet",
+  "onPost",
+  "onPut",
+  "onDelete",
+  "onPatch",
+  "onOptions",
+];
+
+/// Parses the script at `path` and returns its exports, see [`find_source_value_exports`], or
+/// `None` if it can't be read or parsed.
+fn read_source_value_exports(path: &Path, config: &Config) -> Option<HashSet<String>> {
+  let id = path.to_str()?;
+  let syntax = syntax_from_module_type(&module_type_from_id(id)?, config.script.parser.clone())?;
+  let content = fs::read_to_string(path).ok()?;
+  let parsed = parse_module(id, &content, syntax, config.script.target).ok()?;
+  Some(find_source_value_exports(&parsed.ast))
+}
+
+/// Returns whether the layout at `layout_path` wraps the page at `route_path`, i.e. whether
+/// [`LayoutTree::get_layouts_for_path`] returns it, which is when the path segments of the layout
+/// are a prefix of those of the page.
+fn layout_wraps_route(layout_path: &str, route_path: &str) -> bool {
+  let route_segments = route_path
+    .strip_prefix('/')
+    .unwrap_or(route_path)
+    .split('/');
+  // the layout tree nests layouts by the segments of their paths, except for the root layout
+  let layout_segments = if layout_path.len() > 1 {
+    layout_path[1..].split('/').collect::<Vec<_>>()
+  } else {
+    vec![]
+  };
+
+  let mut route_segments = route_segments.into_iter();
+  layout_segments
+    .into_iter()
+    .all(|segment| route_segments.next() == Some(segment))
+}
+
 /// Returns whether `file_path` is a route module, i.e. one that `scan_dir` would find.
 pub(crate) fn is_route_file(routes_dir: &str, file_path: &Path) -> bool {
   file_path.starts_with(routes_dir)
@@ -891,6 +938,79 @@ impl FarmPluginRecooler {
         None
       },
     })
+  }
+
+  /// Returns the files in the routes directory and the root component that the generated server
+  /// entrypoint is certain to import (see `generate_entrypoint_module`), decided without the route
+  /// scan's trace compile, so that the host compile can start on them while the entrypoint is
+  /// generated. Including a file that the entrypoint doesn't import would add it and its side
+  /// effects to the build, so a file is only included if it is imported regardless of the scan
+  /// result:
+  ///
+  /// - every middleware file.
+  /// - a route file if its source exports a page component or a request handler. The page
+  ///   component and request handlers are found with [`find_source_value_exports`], which only
+  ///   parses the file, and leaves out exports that may be types.
+  /// - the root component if any route file exports a page component.
+  /// - a layout file if it wraps any of those pages.
+  ///
+  /// The scan result itself is computed from the same files after they are compiled, so its
+  /// exports are a superset of these.
+  pub(crate) fn entrypoint_prefetch_files(&self, config: &Config) -> Result<Vec<PathBuf>> {
+    let dir_contents = self.scan_dir()?;
+
+    // only the last route file of a path is kept by the scan, see `ScanResult::add_route`
+    let mut route_files = HashMap::<String, &PathBuf>::new();
+    for route_file in &dir_contents.route_files {
+      route_files.insert(file_to_route_path(&self.routes_dir, route_file), route_file);
+    }
+
+    // parsed in parallel, since the host compile waits for this
+    let route_exports = route_files
+      .into_par_iter()
+      .filter_map(|(path, route_file)| {
+        Some((
+          path,
+          route_file,
+          read_source_value_exports(route_file, config)?,
+        ))
+      })
+      .collect::<Vec<_>>();
+
+    let mut files = dir_contents.middleware_files.clone();
+    let mut page_paths = Vec::<String>::new();
+    for (path, route_file, exports) in route_exports {
+      let is_page = exports.contains("default");
+      if is_page
+        || exports.contains("onRequest")
+        || REQUEST_HANDLER_EXPORTS
+          .iter()
+          .any(|name| exports.contains(*name))
+      {
+        files.push(route_file.clone());
+      }
+
+      if is_page {
+        page_paths.push(path);
+      }
+    }
+
+    if !page_paths.is_empty() {
+      files.extend(dir_contents.root_file.iter().cloned());
+
+      for layout_file in &dir_contents.layout_files {
+        let layout_path = file_to_route_path(&self.routes_dir, layout_file);
+        if page_paths
+          .iter()
+          .any(|page_path| layout_wraps_route(&layout_path, page_path))
+        {
+          files.push(layout_file.clone());
+        }
+      }
+    }
+
+    files.sort();
+    Ok(files)
   }
 
   pub(crate) fn scan_routes(
@@ -986,7 +1106,26 @@ impl FarmPluginRecooler {
 
 #[cfg(test)]
 mod tests {
-  use super::is_trace_stubbed;
+  use super::{is_trace_stubbed, layout_wraps_route};
+
+  #[test]
+  fn root_layout_wraps_every_route() {
+    assert!(layout_wraps_route("/", "/"));
+    assert!(layout_wraps_route("/", "/about"));
+    assert!(layout_wraps_route("/", "/(public)/blog/:post"));
+  }
+
+  #[test]
+  fn layout_wraps_routes_under_its_path() {
+    assert!(layout_wraps_route("/(public)", "/(public)"));
+    assert!(layout_wraps_route("/(public)", "/(public)/about"));
+    assert!(layout_wraps_route("/blog", "/blog/:post"));
+    assert!(layout_wraps_route("/blog/:post", "/blog/:post"));
+    assert!(!layout_wraps_route("/blog", "/"));
+    assert!(!layout_wraps_route("/blog", "/blogs"));
+    assert!(!layout_wraps_route("/blog/:post", "/blog"));
+    assert!(!layout_wraps_route("/(public)", "/(admin)/about"));
+  }
 
   fn stubbed(module_id: &str, resolved_path: &str) -> bool {
     is_trace_stubbed(module_id, resolved_path, "src", "src/routes")

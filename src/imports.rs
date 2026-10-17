@@ -71,8 +71,6 @@ impl UniqueImportIdentifiers {
     // the handlers variant of a module has the same path, so the query is compared too
     modules.sort();
 
-    let cwd = std::env::current_dir().unwrap();
-    let cwd_str = cwd.to_str().unwrap();
     let mut out = String::new();
     for module in modules {
       let mut exports = self.exports.get(module).unwrap().iter().collect::<Vec<_>>();
@@ -82,7 +80,7 @@ impl UniqueImportIdentifiers {
           "import {{ {} as {} }} from {};\n",
           export_name,
           ident,
-          serde_json::to_string(&module.resolved_path_with_query(cwd_str)).unwrap()
+          import_source(module)
         )
         .as_str();
       }
@@ -90,6 +88,12 @@ impl UniqueImportIdentifiers {
 
     out
   }
+}
+
+/// Returns the quoted source that generated modules import the module from.
+pub(crate) fn import_source(module: &ModuleId) -> String {
+  let cwd = std::env::current_dir().unwrap();
+  serde_json::to_string(&module.resolved_path_with_query(cwd.to_str().unwrap())).unwrap()
 }
 
 impl Default for UniqueImportIdentifiers {
