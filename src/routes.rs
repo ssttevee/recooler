@@ -337,6 +337,11 @@ pub(crate) fn compare_route_paths(a: &str, b: &str) -> Ordering {
   }
 }
 
+/// Returns the number of segments of a hono path.
+fn route_path_depth(path: &str) -> usize {
+  path.split('/').filter(|s| !s.is_empty()).count()
+}
+
 /// Returns whether a path segment is a group, i.e. a parenthesized directory name.
 fn is_group_segment(segment: &str) -> bool {
   segment.len() > 2
@@ -366,7 +371,15 @@ impl ScanResult {
       .filter(|(path, _)| !path.rsplit('/').next().is_some_and(is_group_segment))
       .map(|(path, module_ids)| (route_path_without_groups(path), path, module_ids))
       .collect::<Vec<_>>();
-    middlewares.sort_by(|a, b| compare_route_paths(&a.0, &b.0).then_with(|| a.1.cmp(b.1)));
+    // the middleware of a directory runs before that of the directories below it, which a
+    // `[param]` directory's middleware also matches the requests of, e.g. `/:id/*` matches those of
+    // `/admin/users/*`, so shallower directories go first regardless of their specificity
+    middlewares.sort_by(|a, b| {
+      route_path_depth(&a.0)
+        .cmp(&route_path_depth(&b.0))
+        .then_with(|| compare_route_paths(&a.0, &b.0))
+        .then_with(|| a.1.cmp(b.1))
+    });
 
     let mut routes = self
       .routes
@@ -1597,6 +1610,33 @@ mod tests {
         .map(|m| m.0.as_str())
         .collect::<Vec<_>>(),
       ["*", "/admin/*"]
+    );
+  }
+
+  #[test]
+  fn route_plan_orders_directory_middleware_shallowest_first() {
+    let result = scan_result(
+      &["/admin/sub/page"],
+      &["/", "/:id", "/admin/sub", "/(s)/admin", "/admin"],
+    );
+
+    assert_eq!(
+      result
+        .route_plan()
+        .middlewares
+        .iter()
+        .map(|(path, module_id)| (path.as_str(), module_id.to_string()))
+        .collect::<Vec<_>>(),
+      [
+        ("*", "src/routes//middleware.ts"),
+        // the middleware of a `[param]` directory goes before that of deeper directories, whose
+        // requests it matches too
+        ("/admin/*", "src/routes/(s)/admin/middleware.ts"),
+        ("/admin/*", "src/routes/admin/middleware.ts"),
+        ("/:id/*", "src/routes/:id/middleware.ts"),
+        ("/admin/sub/*", "src/routes/admin/sub/middleware.ts"),
+      ]
+      .map(|(path, module_id)| (path, module_id.to_string()))
     );
   }
 
