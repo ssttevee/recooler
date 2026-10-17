@@ -167,6 +167,8 @@ struct ComponentFrame {
   props_ident: Option<Ident>,
   /// Whether the first param is destructured and must be replaced by `props_ident`.
   rewrite_param: bool,
+  /// Whether the first param is a rest param, so that the props are `props_ident[0]`.
+  rest_param: bool,
   used: bool,
 }
 
@@ -378,12 +380,25 @@ impl<'a> ComponentTransformVisitor<'a> {
         .map(|ident| Box::new(Expr::Ident(ident)));
     }
 
-    let props_ident = self.component.as_mut().and_then(|component| {
+    let (props_ident, rest_param) = self.component.as_mut().map_or((None, false), |component| {
       component.used = true;
-      component.props_ident.clone()
+      (component.props_ident.clone(), component.rest_param)
     });
 
-    props_ident.map(|ident| self.member(Box::new(Expr::Ident(ident)), "ctx"))
+    props_ident.map(|ident| {
+      let mut props = Box::new(Expr::Ident(ident));
+      if rest_param {
+        props = Box::new(Expr::Member(MemberExpr {
+          span: Default::default(),
+          obj: props,
+          prop: MemberProp::Computed(ComputedPropName {
+            span: Default::default(),
+            expr: Box::new(Expr::Lit(Lit::Num(Number::from(0.0)))),
+          }),
+        }));
+      }
+      self.member(props, "ctx")
+    })
   }
 
   fn action_url(&mut self, form_action_id: &str, captured: &[Ident]) -> Tpl {
@@ -575,18 +590,23 @@ impl<'a> ComponentTransformVisitor<'a> {
       return false;
     }
 
-    let (props_ident, rewrite_param) = match params.next() {
-      None => (None, false),
-      Some(Pat::Ident(binding)) => (Some(binding.id.clone()), false),
+    let (props_ident, rewrite_param, rest_param) = match params.next() {
+      None => (None, false, false),
+      Some(Pat::Ident(binding)) => (Some(binding.id.clone()), false, false),
       Some(Pat::Assign(AssignPat { left, .. })) if left.is_ident() => {
-        (Some(left.as_ident().unwrap().id.clone()), false)
+        (Some(left.as_ident().unwrap().id.clone()), false, false)
       }
-      Some(_) => (Some(self.ident(PROPS_IDENT)), true),
+      Some(Pat::Rest(RestPat { arg, .. })) => match arg.as_ref() {
+        Pat::Ident(binding) => (Some(binding.id.clone()), false, true),
+        _ => (Some(self.ident(PROPS_IDENT)), true, true),
+      },
+      Some(_) => (Some(self.ident(PROPS_IDENT)), true, false),
     };
 
     self.component = Some(ComponentFrame {
       props_ident,
       rewrite_param,
+      rest_param,
       used: false,
     });
 
@@ -652,6 +672,11 @@ fn add_first_param(func: &mut Expr, ident: Ident) {
 /// Replaces a destructured props param with `props_ident` and moves the destructuring into the
 /// function body, so that `props_ident.ctx` can be referenced.
 fn replace_props_param(param: &mut Pat, body: &mut BlockStmt, props_ident: Ident) {
+  // `...pattern` becomes `...props_ident`
+  let param = match param {
+    Pat::Rest(RestPat { arg, .. }) => arg.as_mut(),
+    param => param,
+  };
   let original = std::mem::replace(param, Pat::dummy());
   let (pattern, default) = match original {
     Pat::Assign(AssignPat { left, right, .. }) => (*left, Some(right)),
@@ -2043,6 +2068,25 @@ mod tests {
       result.contains("function C(__recooler_props: RouteProps) { let { id } = __recooler_props;")
     );
     assert!(result.contains("__recooler_props.ctx.req.param(\"id\")"));
+  }
+
+  #[test]
+  fn reads_context_from_rest_props_param() {
+    let result = compact(&transform(
+      r#"
+        export default function C(...args) {
+          return <button hx-post={() => 1} />;
+        }
+      "#,
+    ));
+    assert!(result.contains("function C(...args) { return <button hx-post={`/article/${encodeURIComponent(args[0].ctx.req.param(\"id\"))}?action="));
+
+    let result = compact(&transform(
+      r#"
+        export default (...[{ id }]: [RouteProps]) => <button hx-post={() => id} />;
+      "#,
+    ));
+    assert!(result.contains("(...__recooler_props: [RouteProps])=>{ let [{ id }] = __recooler_props; return <button hx-post={`/article/${encodeURIComponent(__recooler_props[0].ctx.req.param(\"id\"))}?action="));
   }
 
   #[test]
