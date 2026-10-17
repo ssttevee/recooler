@@ -2397,6 +2397,62 @@ mod tests {
   }
 
   #[test]
+  fn nested_actions_use_their_own_frame_or_explicit_context() {
+    let result = compact(&transform(
+      r#"
+        export default function C(props) {
+          return <>
+            <a ctx={props.ctx} hx-post={() => <b hx-post={() => <i hx-post={() => 1} />} />} />
+            <p hx-post={(c1) => <u ctx={c1} hx-post={(c2) => <s hx-post={() => 2} />} />} />
+          </>;
+        }
+      "#,
+    ));
+
+    // three levels: each nested action gets a ctx param for the url of the one it returns, and
+    // none of them captures `props`
+    assert!(result.contains(
+      "(__recooler_ctx)=><b hx-post={`/article/${encodeURIComponent(__recooler_ctx.req.param(\"id\"))}?action="
+    ), "{}", result);
+    assert!(result.contains(
+      "(__recooler_ctx)=><i hx-post={`/article/${encodeURIComponent(__recooler_ctx.req.param(\"id\"))}?action="
+    ), "{}", result);
+    // an explicit ctx inside an action is used for its element only, the action nested in it
+    // uses its own ctx param
+    assert!(
+      result.contains(
+        "(c1)=><u hx-post={`/article/${encodeURIComponent(c1.req.param(\"id\"))}?action="
+      ),
+      "{}",
+      result
+    );
+    assert!(
+      result.contains(
+        "(c2)=><s hx-post={`/article/${encodeURIComponent(c2.req.param(\"id\"))}?action="
+      ),
+      "{}",
+      result
+    );
+    assert!(!result.contains("actionScope("), "{}", result);
+  }
+
+  #[test]
+  fn reads_route_params_with_symbols_and_unicode_in_names() {
+    let result = compact(&transform_at(
+      "/n/:a$b/:口/:rest{.+}",
+      r#"
+        export default function C(props) {
+          return <button hx-post={() => 1} />;
+        }
+      "#,
+    ));
+
+    assert!(result.contains(
+      "`/n/${encodeURIComponent(props.ctx.req.param(\"a$b\"))}/${encodeURIComponent(props.ctx.req.param(\"口\"))}/${props.ctx.req.param(\"rest\").split(\"/\").map(encodeURIComponent).join(\"/\")}?action="
+    ), "{}", result);
+  }
+
+  #[test]
   fn skips_typescript_this_param_for_context() {
     let result = compact(&transform(
       r#"
