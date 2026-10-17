@@ -1994,6 +1994,103 @@ mod tests {
   }
 
   #[test]
+  fn route_path_of_odd_dir_names() {
+    let route_path = |file: &str| file_to_route_path("src/routes", Path::new(file));
+    // brackets that don't enclose a param name are path segments like any other
+    assert_eq!(route_path("src/routes/[]/index.tsx"), "/[]");
+    assert_eq!(route_path("src/routes/[[]]/index.tsx"), "/[[]]");
+    assert_eq!(route_path("src/routes/[id/index.tsx"), "/[id");
+    assert_eq!(route_path("src/routes/[a]]/index.tsx"), "/[a]]");
+    assert_eq!(route_path("src/routes/(/index.tsx"), "/(");
+    assert_eq!(route_path("src/routes/日本語/a b/index.tsx"), "/日本語/a b");
+  }
+
+  #[test]
+  fn scan_odd_dirs_and_files() {
+    let deep = (0..25).map(|i| format!("[p{}]/", i)).collect::<String>();
+    let mut files = vec![
+      ("src/routes/[]/index.tsx".to_string(), PAGE),
+      ("src/routes/[[]]/index.tsx".to_string(), PAGE),
+      ("src/routes/[id/index.tsx".to_string(), PAGE),
+      ("src/routes/(/index.tsx".to_string(), PAGE),
+      ("src/routes/()/layout.tsx".to_string(), LAYOUT),
+      ("src/routes/()/index.tsx".to_string(), PAGE),
+      ("src/routes/日本語/a b/index.tsx".to_string(), PAGE),
+      // an empty route file is neither a page nor a request handler
+      ("src/routes/empty/index.tsx".to_string(), ""),
+      // an empty layout doesn't wrap the page
+      ("src/routes/empty-layout/layout.tsx".to_string(), ""),
+      ("src/routes/empty-layout/index.tsx".to_string(), PAGE),
+      (format!("src/routes/{}index.tsx", deep), PAGE),
+    ];
+    for i in 0..25 {
+      let dir = (0..=i).map(|i| format!("[p{}]/", i)).collect::<String>();
+      files.push((format!("src/routes/{}layout.tsx", dir), LAYOUT));
+    }
+    let files = files
+      .iter()
+      .map(|(path, content)| (path.as_str(), *content))
+      .collect::<Vec<_>>();
+    let fixture = Fixture::new(&files, json!({ "src_dir": "src" }));
+    let result = fixture.plugin.scan_routes_(&fixture.context).unwrap();
+
+    let deep_path = (0..25).map(|i| format!("/:p{}", i)).collect::<String>();
+    let mut paths = result.routes.keys().cloned().collect::<Vec<_>>();
+    paths.sort();
+    let mut expected = vec![
+      "/(",
+      "/()",
+      "/[[]]",
+      "/[]",
+      "/[id",
+      "/empty",
+      "/empty-layout",
+      "/日本語/a b",
+      deep_path.as_str(),
+    ];
+    expected.sort();
+    assert_eq!(paths, expected);
+
+    let page = |path: &str| result.routes[path].page_component.as_ref();
+    assert!(page("/empty").is_none());
+    assert!(result.routes["/empty"].request_handlers.is_empty());
+    let layouts = &page("/empty-layout").unwrap().layouts;
+    assert_eq!(layouts.len(), 1);
+    assert!(!layouts[0].has_hoc);
+    assert_eq!(page("/()").unwrap().layouts.len(), 1);
+    let layouts = &page(&deep_path).unwrap().layouts;
+    assert_eq!(layouts.len(), 25);
+    assert!(layouts.iter().all(|layout| layout.has_hoc));
+  }
+
+  #[test]
+  fn scan_reports_syntax_errors_of_route_files() {
+    let message = scan_error(&[
+      ("src/routes/index.tsx", PAGE),
+      ("src/routes/bad/index.tsx", "export default () => <p>;"),
+    ]);
+    assert!(
+      message.contains("src/routes/bad/index.tsx` failed"),
+      "{}",
+      message
+    );
+  }
+
+  #[test]
+  fn missing_routes_dir_is_an_option_error() {
+    let plugin = crate::FarmPluginRecooler::new(
+      &Default::default(),
+      json!({ "routes_dir": "/nonexistent/recooler/routes" }).to_string(),
+    );
+    assert_eq!(plugin.option_errors.len(), 1, "{:?}", plugin.option_errors);
+    assert!(
+      plugin.option_errors[0].starts_with("invalid routes_dir \"/nonexistent/recooler/routes\""),
+      "{:?}",
+      plugin.option_errors
+    );
+  }
+
+  #[test]
   fn root_layout_wraps_every_route() {
     assert!(layout_wraps_route("/", "/"));
     assert!(layout_wraps_route("/", "/about"));
