@@ -710,6 +710,16 @@ fn form_action_method(name: &str) -> Option<FormActionMethod> {
   }
 }
 
+/// Returns whether the element is an html element rather than a component, by the same rule as
+/// the jsx transform.
+fn is_intrinsic_element(name: &JSXElementName) -> bool {
+  match name {
+    JSXElementName::Ident(ident) => ident.sym.starts_with(|c: char| c.is_ascii_lowercase()),
+    JSXElementName::JSXNamespacedName(_) => true,
+    JSXElementName::JSXMemberExpr(_) => false,
+  }
+}
+
 fn jsx_attr_name(attr: &JSXAttr) -> Option<&str> {
   match &attr.name {
     JSXAttrName::Ident(name) => Some(name.sym.as_str()),
@@ -798,16 +808,15 @@ impl<'a> VisitMut for ComponentTransformVisitor<'a> {
       });
 
       if let Some(index) = explicit_ctx_index {
-        let JSXAttrOrSpread::JSXAttr(attr) = node.attrs.remove(index) else {
+        let JSXAttrOrSpread::JSXAttr(attr) = &node.attrs[index] else {
           unreachable!()
         };
-        let Some(JSXAttrValue::JSXExprContainer(JSXExprContainer {
-          expr: JSXExpr::Expr(explicit_ctx),
-          ..
-        })) = attr.value
-        else {
-          unreachable!()
-        };
+        let explicit_ctx = Box::new(jsx_attr_expr(attr).unwrap().clone());
+        // `ctx` would be rendered as an attribute of an intrinsic element, but a component may use
+        // the prop itself
+        if is_intrinsic_element(&node.name) {
+          node.attrs.remove(index);
+        }
 
         let previous_ctx = self.explicit_action_ctx.replace(explicit_ctx);
         node.visit_mut_children_with(self);
@@ -1712,6 +1721,31 @@ mod tests {
     assert!(result.contains("requestContext.req.param(\"id\")"));
     assert!(!result.contains("ctx={requestContext}"));
     assert!(!result.contains("props.ctx.req.param"));
+  }
+
+  #[test]
+  fn passes_explicit_action_context_on_to_components() {
+    let result = compact(&transform(
+      r#"
+        export default function Component(props) {
+          const rc = props.context;
+          return <>
+            <LikeButton ctx={rc} hx-post={() => null} />
+            <ui.Button ctx={rc} hx-post={() => null} />
+            <svg:a ctx={rc} hx-post={() => null} />
+          </>;
+        }
+      "#,
+    ));
+
+    assert!(result.contains(
+      "<LikeButton ctx={rc} hx-post={`/article/${encodeURIComponent(rc.req.param(\"id\"))}?action="
+    ));
+    assert!(result.contains(
+      "<ui.Button ctx={rc} hx-post={`/article/${encodeURIComponent(rc.req.param(\"id\"))}?action="
+    ));
+    assert!(result
+      .contains("<svg:a hx-post={`/article/${encodeURIComponent(rc.req.param(\"id\"))}?action="));
   }
 
   #[test]
